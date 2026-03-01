@@ -56,13 +56,12 @@ Konec ručního vyplňování daňového přiznání.
 Aplikace hlídá tzv. "Zdraví portfolia". Pokud se pokusíte vytvořit příliš koncentrovaný mix, bar zdraví zčervená. Výchozí nastavení je koncipováno jako "All-Weather Dividend Growth" strategie.
 
 Charakteristika výchozího mixu:
-| ------- | -----------| ----------------- |
 | Segment | Vlastnosti | Zastoupené tituly |
+| ------- | -----------| ----------------- |
 | Technologický růst | Nízká dividenda, vysoký růst kapitálu. | AAPL, AVGO, CAT |
 | Defenzivní stabilita | Odolnost v recesi, stabilní výplata. | JNJ, ABBV, PEP, ULVR.L, NEE |
 | Vysoký cash-flow | BDC a REIT tituly s výnosem 6–10 %. | MAIN, HTGC, OHI, O |
 | Zahraniční diverzifikace | Expozice vůči britské libře (GBP). | LGEN.L, TRIG.L |
-| ------- | -----------| ----------------- |
 
 ⚠️ INVESTIČNÍ RIZIKA:
 
