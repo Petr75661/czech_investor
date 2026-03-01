@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dokumentace | Czech Investor App (2026)</title>
+    <style>
+        :root { --primary: #1a2a6c; --secondary: #b21f1f; --accent: #1565C0; --success: #2e7d32; --bg: #f4f7f9; }
+        body { font-family: 'Segoe UI', sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background-color: var(--bg); }
+        header { background: linear-gradient(135deg, var(--primary), #b21f1f); color: white; padding: 40px 20px; border-radius: 12px; text-align: center; margin-bottom: 30px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        h1 { margin: 0; font-size: 2.5em; }
+        h2 { color: var(--primary); border-bottom: 2px solid var(--primary); padding-bottom: 8px; margin-top: 40px; display: flex; align-items: center; }
+        h3 { color: var(--secondary); margin-top: 25px; }
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 25px; border-top: 4px solid var(--primary); }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        code { background: #eef1f4; padding: 3px 6px; border-radius: 4px; font-family: 'Consolas', monospace; color: #d63384; font-size: 0.95em; }
+        pre { background: #2d3436; color: #dfe6e9; padding: 20px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; box-shadow: inset 0 2px 10px rgba(0,0,0,0.5); }
+        .risk-warning { background-color: #fff3f3; border-left: 5px solid #d32f2f; padding: 20px; border-radius: 4px; }
+        .info-box { background-color: #e3f2fd; border-left: 5px solid var(--accent); padding: 20px; border-radius: 4px; }
+        .step { background: var(--primary); color: white; width: 28px; height: 28px; display: inline-block; text-align: center; border-radius: 50%; margin-right: 10px; font-weight: bold; line-height: 28px; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; }
+        th { background-color: #f8f9fa; }
+        .tag { display: inline-block; background: #ddd; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; margin-right: 5px; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Czech Investor: Tax & Portfolio Manager</h1>
+    <p>Profesionální analytika, správa portfolia a automatizace daní v ČR</p>
+</header>
+
+<div class="card">
+    <h2>O aplikaci</h2>
+    <p>Aplikace je navržena pro české investory, kteří vyžadují matematickou přesnost při rebalancování a zároveň chtějí mít vyřešenou daňovou agendu na jeden klik. Unikátní algoritmus <strong>Monte Carlo</strong> simuluje velké množství scénářů pro optimalizaci vašeho výnosu při zachování bezpečných limitů.</p>
+</div>
+
+<h2>1. Instalace a zprovoznění</h2>
+<div class="card">
+    <h3>Krok 1: Instalace prostředí Python</h3>
+    <p><span class="step">1</span> Stáhněte si <strong>Python 3.10+</strong> z <a href="https://www.python.org/" target="_blank">python.org</a>.</p>
+    <p><span class="step">2</span> Při instalaci na Windows aktivujte volbu <strong>"Add Python to PATH"</strong>.</p>
+
+    <h3>Krok 2: Instalace doplňků (Knihoven)</h3>
+    <p>Aplikace využívá pokročilé knihovny pro data, grafiku a generování dokumentů. Otevřete terminál (CMD) a spusťte:</p>
+    <pre>pip install yfinance pandas matplotlib numpy beautifulsoup4 requests reportlab</pre>
+</div>
+
+<h2>2. Klíčové moduly aplikace</h2>
+<div class="grid">
+    <div class="card">
+        <h3>⚙️ Editor výběru akcií</h3>
+        <p>Umožňuje definovat váš "investiční vesmír".</p>
+        <ul>
+            <li><strong>Etické filtry:</strong> Skryjte jedním klikem Tabák, Zbraně, Kasina nebo AI bubliny.</li>
+            <li><strong>Vizuální analýza:</strong> ASCII pruhy ukazují bipolární růst za 2 roky a dividendový výnos.</li>
+            <li><strong>Online hledání:</strong> Automatické dohledání tickerů (US i UK trhy) včetně stažení metrik.</li>
+        </ul>
+    </div>
+    <div class="card">
+        <h3>📊 Tuning Portfolia</h3>
+        <p>Matematické jádro postavené na Moderní teorii portfolia.</p>
+        <ul>
+            <li><strong>Reality Check:</strong> Srovnání vaší křivky s indexem <strong>S&P 500</strong>.</li>
+            <li><strong>Risk Meter:</strong> Výpočet roční volatility a drawdownu v reálném čase.</li>
+            <li><strong>Multi-core:</strong> Simulace využívá všechna jádra vašeho CPU pro bleskový výpočet.</li>
+        </ul>
+    </div>
+</div>
+
+<div class="grid">
+    <div class="card">
+        <h3>🏦 Správa Ledgeru (FIFO)</h3>
+        <p>Striktní evidence nákupů pro daňové účely.</p>
+        <ul>
+            <li><strong>Časový test:</strong> Automatické hlídání 3letého limitu pro osvobození od daně v ČR.</li>
+            <li><strong>FIFO prodeje:</strong> Přesný odečet kusů od nejstarších lotů.</li>
+            <li><strong>Měnové kurzy:</strong> Automatické stahování jednotných kurzů MFČR.</li>
+        </ul>
+    </div>
+    <div class="card">
+        <h3>📄 Daňový Automat</h3>
+        <p>Konec ručního vyplňování daňového přiznání.</p>
+        <ul>
+            <li><strong>XML Export:</strong> Soubor pro přímé nahrání do portálu <strong>mojedane.cz</strong>.</li>
+            <li><strong>PDF Kuchařka:</strong> Podrobný návod, do kterých řádků přiznání co opsat.</li>
+            <li><strong>Limity:</strong> Automatické vyhodnocení osvobození do 100 000 Kč příjmu.</li>
+        </ul>
+    </div>
+</div>
+
+<h2>3. Investiční logika a rizika</h2>
+<div class="card">
+    <p>Aplikace hlídá tzv. <strong>"Zdraví portfolia"</strong>. Pokud se pokusíte vytvořit příliš koncentrovaný mix, bar zdraví zčervená. Výchozí nastavení je koncipováno jako <strong>"All-Weather Dividend Growth"</strong> strategie.</p>
+    
+    <h3>Charakteristika výchozího mixu</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Segment</th>
+                <th>Vlastnosti</th>
+                <th>Zastoupené tituly</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Technologický růst</strong></td>
+                <td>Nízká dividenda, vysoký růst kapitálu.</td>
+                <td>AAPL, AVGO, CAT</td>
+            </tr>
+            <tr>
+                <td><strong>Defenzivní stabilita</strong></td>
+                <td>Odolnost v recesi, stabilní výplata.</td>
+                <td>JNJ, ABBV, PEP, ULVR.L, NEE</td>
+            </tr>
+            <tr>
+                <td><strong>Vysoký cash-flow</strong></td>
+                <td>BDC a REIT tituly s výnosem 6–10 %.</td>
+                <td>MAIN, HTGC, OHI, O</td>
+            </tr>
+            <tr>
+                <td><strong>Zahraniční diverzifikace</strong></td>
+                <td>Expozice vůči britské libře (GBP).</td>
+                <td>LGEN.L, TRIG.L</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="risk-warning">
+        <strong>⚠️ INVESTIČNÍ RIZIKA:</strong>
+        <ul>
+            <li><strong>Koncentrace v BDC:</strong> Tituly jako HTGC a MAIN tvoří značnou část příjmů. Jsou citlivé na úrokové sazby a stav ekonomiky USA.</li>
+            <li><strong>Měnové riziko:</strong> Investujete v cizích měnách. Posílení CZK vůči USD/GBP snižuje hodnotu vašeho portfolia v korunách.</li>
+            <li><strong>Závislost na datech:</strong> Aplikace využívá neoficiální API Yahoo Finance. V případě změny struktury jejich webu může dojít k dočasnému výpadku stahování dat.</li>
+        </ul>
+    </div>
+</div>
+
+<h2>4. Automatizace: Plánovač úloh Windows</h2>
+<div class="card">
+    <p>Pro disciplinované investování doporučujeme nastavit automatické spouštění aplikace v den, kdy provádíte nákupy (např. 1. den v měsíci).</p>
+    <ol>
+        <li>Otevřete <strong>Plánovač úloh</strong> (Task Scheduler) ve Windows.</li>
+        <li>Zvolte <strong>Vytvořit základní úlohu</strong> a pojmenujte ji <code>Czech Investor Nákup</code>.</li>
+        <li>Nastavte spouštění <strong>Měsíčně</strong>.</li>
+        <li>V kroku "Akce" zvolte <strong>Spustit program</strong>.</li>
+        <li>Do pole Program/skript vložte cestu k <code>pythonw.exe</code> (např. <code>C:\Users\Jmeno\AppData\Local\Programs\Python\Python312\pythonw.exe</code>).</li>
+        <li>Do pole <strong>Argumenty</strong> vložte celou cestu k vašemu skriptu (např. <code>"C:\Investice\stocks.py"</code>).</li>
+    </ol>
+    <div class="info-box">
+        <strong>Tip:</strong> Verze <code>pythonw.exe</code> spustí aplikaci přímo v grafickém režimu bez rušivého černého okna terminálu.
+    </div>
+</div>
+
+<h2>5. Důležité právní upozornění</h2>
+<div class="card" style="border-top-color: #636e72;">
+    <p style="font-size: 0.9em; color: #636e72;">
+        Tato aplikace je určena výhradně pro edukační a analytické účely. Autor nenese žádnou odpovědnost za případné finanční ztráty vzniklé investováním na základě simulací v tomto softwaru. Daňový modul generuje podklady na základě aktuálně platných zákonů ČR k roku 2025/2026, uživatel by si však měl finální výpočty vždy ověřit u certifikovaného daňového poradce.
+    </p>
+</div>
+
+</body>
+</html>
