@@ -23,50 +23,50 @@ pip install yfinance pandas matplotlib numpy beautifulsoup4 requests reportlab
 
 Umožňuje definovat váš "investiční vesmír".
 
-*Etické filtry: Skryjte jedním klikem Tabák, Zbraně, Kasina nebo AI bubliny.
-*Vizuální analýza: ASCII pruhy ukazují bipolární růst za 2 roky a dividendový výnos.
-*Online hledání: Automatické dohledání tickerů (US i UK trhy) včetně stažení metrik.
+* Etické filtry: Skryjte jedním klikem Tabák, Zbraně, Kasina nebo AI bubliny.
+* Vizuální analýza: ASCII pruhy ukazují bipolární růst za 2 roky a dividendový výnos.
+* Online hledání: Automatické dohledání tickerů (US i UK trhy) včetně stažení metrik.
 
 📊 Tuning Portfolia
 
 Matematické jádro postavené na Moderní teorii portfolia.
 
-*Reality Check: Srovnání vaší křivky s indexem S&P 500.
-*Risk Meter: Výpočet roční volatility a drawdownu v reálném čase.
-*Multi-core: Simulace využívá všechna jádra vašeho CPU pro bleskový výpočet.
+* Reality Check: Srovnání vaší křivky s indexem S&P 500.
+* Risk Meter: Výpočet roční volatility a drawdownu v reálném čase.
+* Multi-core: Simulace využívá všechna jádra vašeho CPU pro bleskový výpočet.
 
 🏦 Správa Ledgeru (FIFO)
 
 Striktní evidence nákupů pro daňové účely.
 
-*Časový test: Automatické hlídání 3letého limitu pro osvobození od daně v ČR.
-*FIFO prodeje: Přesný odečet kusů od nejstarších lotů.
-*Měnové kurzy: Automatické stahování jednotných kurzů MFČR.
+* Časový test: Automatické hlídání 3letého limitu pro osvobození od daně v ČR.
+* FIFO prodeje: Přesný odečet kusů od nejstarších lotů.
+* Měnové kurzy: Automatické stahování jednotných kurzů MFČR.
 
 📄 Daňový Automat
 
 Konec ručního vyplňování daňového přiznání.
 
-*XML Export: Soubor pro přímé nahrání do portálu mojedane.cz.
-*PDF Kuchařka: Podrobný návod, do kterých řádků přiznání co opsat.
-*Limity: Automatické vyhodnocení osvobození do 100 000 Kč příjmu.
+* XML Export: Soubor pro přímé nahrání do portálu mojedane.cz.
+* PDF Kuchařka: Podrobný návod, do kterých řádků přiznání co opsat.
+* Limity: Automatické vyhodnocení osvobození do 100 000 Kč příjmu.
 
 ## 3. Investiční logika a rizika
 
 Aplikace hlídá tzv. "Zdraví portfolia". Pokud se pokusíte vytvořit příliš koncentrovaný mix, bar zdraví zčervená. Výchozí nastavení je koncipováno jako "All-Weather Dividend Growth" strategie.
 
-*Charakteristika výchozího mixu
-*Segment	Vlastnosti	Zastoupené tituly
-*Technologický růst	Nízká dividenda, vysoký růst kapitálu.	AAPL, AVGO, CAT
-*Defenzivní stabilita	Odolnost v recesi, stabilní výplata.	JNJ, ABBV, PEP, ULVR.L, NEE
-*Vysoký cash-flow	BDC a REIT tituly s výnosem 6–10 %.	MAIN, HTGC, OHI, O
-*Zahraniční diverzifikace	Expozice vůči britské libře (GBP).	LGEN.L, TRIG.L
+* Charakteristika výchozího mixu
+* Segment	Vlastnosti	Zastoupené tituly
+* Technologický růst	Nízká dividenda, vysoký růst kapitálu.	AAPL, AVGO, CAT
+* Defenzivní stabilita	Odolnost v recesi, stabilní výplata.	JNJ, ABBV, PEP, ULVR.L, NEE
+* Vysoký cash-flow	BDC a REIT tituly s výnosem 6–10 %.	MAIN, HTGC, OHI, O
+* Zahraniční diverzifikace	Expozice vůči britské libře (GBP).	LGEN.L, TRIG.L
 
 ⚠️ INVESTIČNÍ RIZIKA:
 
-*Koncentrace v BDC: Tituly jako HTGC a MAIN tvoří značnou část příjmů. Jsou citlivé na úrokové sazby a stav ekonomiky USA.
-*Měnové riziko: Investujete v cizích měnách. Posílení CZK vůči USD/GBP snižuje hodnotu vašeho portfolia v korunách.
-*Závislost na datech: Aplikace využívá neoficiální API Yahoo Finance. V případě změny struktury jejich webu může dojít k dočasnému výpadku stahování dat.
+* Koncentrace v BDC: Tituly jako HTGC a MAIN tvoří značnou část příjmů. Jsou citlivé na úrokové sazby a stav ekonomiky USA.
+* Měnové riziko: Investujete v cizích měnách. Posílení CZK vůči USD/GBP snižuje hodnotu vašeho portfolia v korunách.
+* Závislost na datech: Aplikace využívá neoficiální API Yahoo Finance. V případě změny struktury jejich webu může dojít k dočasnému výpadku stahování dat.
 
 ## 4. Automatizace: Plánovač úloh Windows
 
