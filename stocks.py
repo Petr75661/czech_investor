@@ -438,10 +438,38 @@ class CzechInvestorApp:
             self.root.after_cancel(state_dict["job"])
             state_dict["job"] = None
 
+    def _set_tuner_controls_state(self, state):
+        """Zapíná/vypíná ovládací prvky na kartě Tuning během výpočtu."""
+        if hasattr(self, 'btn_change_stocks') and self.btn_change_stocks.winfo_exists():
+            self.btn_change_stocks.config(state=state)
+        if hasattr(self, 'btn_init_tuner') and self.btn_init_tuner.winfo_exists():
+            self.btn_init_tuner.config(state=state)
+        if hasattr(self, 'btn_apply_weights') and self.btn_apply_weights.winfo_exists():
+            self.btn_apply_weights.config(state=state)
+        if hasattr(self, 'tuner_checkboxes'):
+            for cb in self.tuner_checkboxes:
+                if cb.winfo_exists(): cb.config(state=state)
+        
+        # Slidery vypínáme vždy. Zapínají se pak nezávisle pouze při úspěšné simulaci.
+        if state == tk.DISABLED and hasattr(self, 'sliders'):
+            for s in self.sliders.values():
+                if s.winfo_exists(): s.config(state=tk.DISABLED)
+
     def run_tuner_with_loading(self, target_func, msg):
+        """Spustí funkci na pozadí s vizuální indikací a uzamkne UI Tuneru."""
         if self.tuner_loading_state["is_loading"]: return
+        
         self.show_loading(self.tuner_loading_state, msg)
-        threading.Thread(target=lambda: self._thread_task(target_func, self.tuner_loading_state), daemon=True).start()
+        self._set_tuner_controls_state(tk.DISABLED) # Okamžité vizuální zablokování UI
+        
+        # Obalovací funkce (Wrapper), která garantuje odemčení UI i při pádu kódu (výpadku dat atd.)
+        def wrapped_func():
+            try:
+                target_func()
+            finally:
+                self.root.after(0, lambda: self._set_tuner_controls_state(tk.NORMAL))
+                
+        threading.Thread(target=lambda: self._thread_task(wrapped_func, self.tuner_loading_state), daemon=True).start()
 
     def run_dash_with_loading(self, target_func, msg):
         if self.dash_loading_state["is_loading"]: return
@@ -1077,19 +1105,24 @@ class CzechInvestorApp:
         title_frame = tk.Frame(control_panel, bg="#FFF8E1")
         title_frame.pack(fill=tk.X, pady=(0, 10))
         tk.Label(title_frame, text=f"Optimalizace ({int(MIN_W*100)}-{int(MAX_W*100)}%)", font=("Arial", 18, "bold"), bg="#FFF8E1").pack(side=tk.LEFT)
-        tk.Button(title_frame, text="⚙️ Změnit akcie", command=self.open_portfolio_editor, font=("Arial", 12), bg="#DDD").pack(side=tk.RIGHT)
+        
+        # Uložení reference na tlačítko Změnit akcie
+        self.btn_change_stocks = tk.Button(title_frame, text="⚙️ Změnit akcie", command=self.open_portfolio_editor, font=("Arial", 12), bg="#DDD")
+        self.btn_change_stocks.pack(side=tk.RIGHT)
         
         tk.Label(control_panel, text="Které akcie chcete tunit? (nezaškrtlé = fixováno):", bg="#FFF8E1", font=("Arial", 12, "bold")).pack(anchor="w", pady=(0,5))
         cb_frame = tk.Frame(control_panel, bg="#FFF8E1")
         cb_frame.pack(anchor="w", fill=tk.X, pady=(0,10))
         
         self.tuner_vars = {}
+        self.tuner_checkboxes =[] # Uložení referencí na checkboxy
         tickers = list(TARGETS.keys())
         for i, t in enumerate(tickers):
             var = tk.BooleanVar(value=True) 
             self.tuner_vars[t] = var
             cb = tk.Checkbutton(cb_frame, text=t, variable=var, bg="#FFF8E1", font=("Arial", 12), command=self.on_checkbox_toggle)
             cb.grid(row=i//3, column=i%3, sticky="w", padx=2)
+            self.tuner_checkboxes.append(cb)
             
         self.btn_init_tuner = tk.Button(control_panel, text="⚡ NAČÍST DATA & SIMULOVAT", 
                                         command=lambda: self.run_tuner_with_loading(lambda: self.initialize_tuner_data(force_download=True), "Stahuji data a simuluji..."),
@@ -1126,7 +1159,9 @@ class CzechInvestorApp:
         self.risk_progress = ttk.Progressbar(control_panel, orient=tk.HORIZONTAL, length=320, mode='determinate', maximum=30)
         self.risk_progress.pack(pady=(0, 10))
 
-        tk.Button(control_panel, text="✓ POUŽÍT NOVÉ VÁHY", command=self.apply_tuned_weights, bg="#2E7D32", fg="white", font=("Arial", 12, "bold")).pack(pady=20, fill=tk.X)
+        # Uložení reference na potvrzovací tlačítko
+        self.btn_apply_weights = tk.Button(control_panel, text="✓ POUŽÍT NOVÉ VÁHY", command=self.apply_tuned_weights, bg="#2E7D32", fg="white", font=("Arial", 12, "bold"))
+        self.btn_apply_weights.pack(pady=20, fill=tk.X)
 
         base_frame = tk.LabelFrame(control_panel, text="Aktuálně uložené portfolio (Base)", bg="#FFF8E1", padx=10, pady=10, font=("Arial", 12, "bold"))
         base_frame.pack(fill=tk.X, pady=(0, 10))
