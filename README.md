@@ -14,7 +14,9 @@ Aplikace je navržena pro české investory, kteří vyžadují matematickou př
 
 ### Krok 2: Instalace doplňků (knihoven)
 Aplikace využívá pokročilé knihovny pro data, grafiku a generování dokumentů. Otevřete terminál (CMD) a spusťte:
+```bash
 pip install yfinance pandas matplotlib numpy beautifulsoup4 requests reportlab
+```
 
 ## 2. Klíčové moduly aplikace
 ⚙️ Editor výběru akcií
