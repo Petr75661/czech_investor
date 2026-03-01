@@ -69,7 +69,7 @@ LIMITS = {
     "MAX_SINGLE_WEIGHT": 0.15,   
     "MAX_SECTOR_WEIGHT": 0.35,   
     "MAX_BDC_REIT_WEIGHT": 0.25, 
-    "MIN_POSITIONS": 8,          
+    "MIN_POSITIONS": 8,
     "MAX_POSITIONS": 25,
     "MIN_GROWTH_RATIO": 0.25,     
     "MIN_YIELD_RATIO": 0.40
@@ -87,43 +87,67 @@ TAGS = {
 # Master databáze (Universe) dostupných akcií
 # Pokud JSON soubor neexistuje, aplikace zkopíruje data z této šablony.
 DEFAULT_STOCK_DB = {
+    # -- TECHNOLOGIE & RŮST --
     "AAPL":   {"name": "Apple Inc.", "sector": "Technology", "tags":[], "yield": 0.5, "growth": 35.0},
     "MSFT":   {"name": "Microsoft Corp.", "sector": "Technology", "tags": ["AI_BUBBLE"], "yield": 0.7, "growth": 45.0},
     "AVGO":   {"name": "Broadcom Inc.", "sector": "Technology", "tags": ["AI_BUBBLE"], "yield": 1.4, "growth": 110.0},
     "TXN":    {"name": "Texas Instruments", "sector": "Technology", "tags":[], "yield": 2.8, "growth": 15.0},
     "NVDA":   {"name": "NVIDIA Corp.", "sector": "Technology", "tags": ["AI_BUBBLE"], "yield": 0.03, "growth": 250.0},
     "GOOGL":  {"name": "Alphabet Inc.", "sector": "Technology", "tags": ["AI_BUBBLE"], "yield": 0.0, "growth": 40.0},
+    
+    # -- ZDRAVOTNICTVÍ --
     "JNJ":    {"name": "Johnson & Johnson", "sector": "Healthcare", "tags":[], "yield": 3.0, "growth": -5.0},
     "ABBV":   {"name": "AbbVie Inc.", "sector": "Healthcare", "tags":[], "yield": 3.6, "growth": 25.0},
     "PFE":    {"name": "Pfizer Inc.", "sector": "Healthcare", "tags":[], "yield": 6.0, "growth": -35.0},
     "MRK":    {"name": "Merck & Co.", "sector": "Healthcare", "tags":[], "yield": 2.5, "growth": 20.0},
+
+    # -- SPOTŘEBNÍ ZBOŽÍ (DEFENZIVA) --
     "PEP":    {"name": "PepsiCo, Inc.", "sector": "Consumer Defensive", "tags":[], "yield": 3.1, "growth": -2.0},
     "KO":     {"name": "Coca-Cola Co.", "sector": "Consumer Defensive", "tags":[], "yield": 3.2, "growth": 5.0},
     "PG":     {"name": "Procter & Gamble", "sector": "Consumer Defensive", "tags":[], "yield": 2.4, "growth": 12.0},
     "ULVR.L": {"name": "Unilever PLC", "sector": "Consumer Defensive", "tags":[], "yield": 3.8, "growth": 8.0},
     "BATS.L": {"name": "British American Tobacco", "sector": "Consumer Defensive", "tags": ["TOBACCO"], "yield": 9.5, "growth": -10.0},
     "MO":     {"name": "Altria Group", "sector": "Consumer Defensive", "tags": ["TOBACCO"], "yield": 9.2, "growth": 5.0},
+
+    # -- FINANCE & BDC (VÝNOS) --
     "MAIN":   {"name": "Main Street Capital", "sector": "Financial", "tags":[], "yield": 6.2, "growth": 18.0},
     "HTGC":   {"name": "Hercules Capital", "sector": "Financial", "tags":[], "yield": 10.5, "growth": 12.0},
     "LGEN.L": {"name": "Legal & General", "sector": "Financial", "tags":[], "yield": 8.5, "growth": -5.0},
     "MNG.L":  {"name": "M&G PLC", "sector": "Financial", "tags":[], "yield": 9.5, "growth": 2.0},
     "JPM":    {"name": "JPMorgan Chase", "sector": "Financial", "tags":[], "yield": 2.3, "growth": 45.0},
+
+    # -- REALITY (REITs) --
     "O":      {"name": "Realty Income", "sector": "Real Estate", "tags":[], "yield": 5.5, "growth": -12.0},
     "OHI":    {"name": "Omega Healthcare", "sector": "Real Estate", "tags":[], "yield": 8.5, "growth": 10.0},
     "VICI":   {"name": "VICI Properties", "sector": "Real Estate", "tags": ["CASINO"], "yield": 5.8, "growth": 5.0},
     "WPC":    {"name": "W. P. Carey", "sector": "Real Estate", "tags":[], "yield": 6.2, "growth": -15.0},
+
+    # -- PRŮMYSL & INFRASTRUKTURA --
     "CAT":    {"name": "Caterpillar Inc.", "sector": "Industrial", "tags":[], "yield": 1.6, "growth": 60.0},
     "LMT":    {"name": "Lockheed Martin", "sector": "Industrial", "tags": ["WEAPONS"], "yield": 2.8, "growth": 10.0},
     "MMM":    {"name": "3M Company", "sector": "Industrial", "tags":[], "yield": 6.5, "growth": -20.0},
     "TRIG.L": {"name": "Renewables Infra", "sector": "Utilities", "tags":[], "yield": 7.5, "growth": -25.0},
     "NEE":    {"name": "NextEra Energy", "sector": "Utilities", "tags":[], "yield": 3.5, "growth": -15.0},
+
+    # -- ENERGIE (FOSILNÍ) --
     "CVX":    {"name": "Chevron Corp.", "sector": "Energy", "tags": ["FOSSIL"], "yield": 4.1, "growth": -5.0},
     "XOM":    {"name": "Exxon Mobil", "sector": "Energy", "tags": ["FOSSIL"], "yield": 3.2, "growth": 10.0},
     "SHEL.L": {"name": "Shell PLC", "sector": "Energy", "tags": ["FOSSIL"], "yield": 4.0, "growth": 15.0},
+
+    # -- ETF SEKTOR (UCITS VARIANTY PRO ČESKÉHO INVESTORA) --
+    # Přidán klíč "country": "UK" pro správné daňové škatulkování v PDF a XML
+    "VUSA.L": {"name": "Vanguard S&P 500 (Dist)", "sector": "ETF", "tags": [], "yield": 1.2, "growth": 30.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
+    "CSPX.L": {"name": "iShares Core S&P 500 (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 31.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
+    "VWRL.L": {"name": "Vanguard All-World (Dist)", "sector": "ETF", "tags": [], "yield": 1.6, "growth": 20.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
+    "VWRA.L": {"name": "Vanguard All-World (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 21.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
+    "VHYL.L": {"name": "Vanguard High Div (Dist)", "sector": "ETF", "tags": [], "yield": 3.5, "growth": 12.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
+    "EQQQ.L": {"name": "iShares NASDAQ 100 (Dist)", "sector": "ETF", "tags": [], "yield": 0.5, "growth": 55.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
+    "CNDX.L": {"name": "iShares NASDAQ 100 (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 56.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
+    "IWDP.L": {"name": "iShares Global REITs (Dist)", "sector": "ETF", "tags": [], "yield": 3.8, "growth": 2.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
 }
 
 # Parametry pro Monte Carlo tuning portfolia
-MIN_W = 0.04
+MIN_W = 0.03
 MAX_W = 0.13
 EPS = 0.001
 ENFORCEMENT_W = 0.5  # Důraz na trefení čísla na slideru
@@ -328,35 +352,75 @@ class CzechInvestorApp:
         return {"USD": 23.5, "GBP": 29.5}
 
     def fetch_sell_price(self):
-        t = self.sell_ticker.get()
-        if not t: return
-        try:
-            df = self._safe_yf_download(t, period="5d")
-            if df.empty or 'Close' not in df: raise ValueError("Data nejsou k dispozici")
-            p = df['Close'].ffill().iloc[-1]
-            if isinstance(p, pd.Series): p = p.iloc[0]
-            if t.endswith(".L"): p = float(p) / 100.0
+        """Spustí stahování aktuální ceny ve vedlejším vlákně, aby UI nezamrzlo."""
+        ticker = self.sell_ticker.get().strip().upper()
+        if not ticker: return
+        
+        # Vizuální indikace v Dashboardu (pokud je label dostupný)
+        if hasattr(self, 'status_lbl'):
+            self.status_lbl.config(text=f"Stahuji cenu pro {ticker}...", fg="blue")
+        
+        def work():
+            try:
+                # Použijeme náš robustní downloader
+                df = self._safe_yf_download(ticker, period="5d")
                 
-            self.sell_price_entry.delete(0, tk.END)
-            self.sell_price_entry.insert(0, f"{float(p):.2f}".replace('.', ','))
-        except Exception as e: 
-            messagebox.showerror("Chyba", f"Nelze stáhnout cenu pro {t} ani po opakovaných pokusech.")
+                if df.empty or 'Close' not in df:
+                    raise ValueError(f"Yahoo Finance neposkytl cenu pro {ticker}.")
+                
+                # Získání Close dat
+                close_col = df['Close']
+                
+                # yfinance může vrátit DataFrame (u více tickerů) nebo Series (u jednoho).
+                # Musíme zkontrolovat, co jsme dostali:
+                if isinstance(close_col, pd.DataFrame):
+                    # Pokud je to DataFrame, vybereme sloupec s tickerem
+                    p_val = close_col[ticker].ffill().iloc[-1]
+                else:
+                    # Pokud je to Series, vezmeme poslední hodnotu přímo
+                    p_val = close_col.ffill().iloc[-1]
+
+                # Ošetření nečíselných hodnot (NaN)
+                if pd.isna(p_val):
+                    raise ValueError("Cena je momentálně nedostupná (NaN).")
+
+                # Úprava pro britské pence (.L)
+                if ticker.endswith(".L"): 
+                    p_val = float(p_val) / 100.0
+                
+                # Bezpečný zápis do UI přes hlavní vlákno
+                self.root.after(0, lambda p=p_val: self._update_sell_price_ui(p))
+                
+            except Exception as e:
+                err_msg = str(e)
+                print(f"Error fetching price: {err_msg}")
+                self.root.after(0, lambda m=err_msg: messagebox.showerror("Chyba stahování", m))
+            finally:
+                if hasattr(self, 'status_lbl'):
+                    self.root.after(0, lambda: self.status_lbl.config(text="Hotovo", fg="green"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_sell_price_ui(self, price):
+        """Pomocná metoda pro bezpečný zápis ceny do políčka (voláno z after)."""
+        self.sell_price_entry.delete(0, tk.END)
+        self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
 
     def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=3):
-        """Univerzální stahovač s opakováním. Vrací DataFrame (při chybě prázdný)."""
+        """Robustní stahovač. Využívá parametry pro stabilizaci dotazu na Yahoo."""
         import time
         for i in range(max_retries):
             try:
-                data = yf.download(tickers, period=period, interval=interval, progress=False)
+                # Přidány parametry auto_adjust a actions pro vyšší stabilitu API
+                data = yf.download(tickers, period=period, interval=interval, 
+                                   progress=False, auto_adjust=True, actions=False)
+                
                 if not data.empty and 'Close' in data:
                     return data
             except Exception as e:
+                print(f"Pokus {i+1} o stažení {tickers} selhal... ({e})")
                 if i < max_retries - 1:
-                    print(f"Pokus {i+1} o stažení {tickers} selhal, zkouším znovu za 1s...")
-                    time.sleep(1)
-                else:
-                    print(f"Všechny pokusy o stažení {tickers} selhaly.")
-        
+                    time.sleep(1.0)
         # Pokud vše selže, vracíme prázdnou tabulku (volající funkce se s tím musí poprat)
         return pd.DataFrame()
         
@@ -472,9 +536,20 @@ class CzechInvestorApp:
         threading.Thread(target=lambda: self._thread_task(wrapped_func, self.tuner_loading_state), daemon=True).start()
 
     def run_dash_with_loading(self, target_func, msg):
+        """Spustí funkci na pozadí s vizuální indikací a uzamkne UI Statistik."""
         if self.dash_loading_state["is_loading"]: return
+        
         self.show_loading(self.dash_loading_state, msg)
-        threading.Thread(target=lambda: self._thread_task(target_func, self.dash_loading_state), daemon=True).start()
+        self._set_dash_controls_state(tk.DISABLED) # Vizuální zablokování tlačítek
+        
+        # Obalovací funkce garantující odemčení UI i při selhání stahování
+        def wrapped_func():
+            try:
+                target_func()
+            finally:
+                self.root.after(0, lambda: self._set_dash_controls_state(tk.NORMAL))
+                
+        threading.Thread(target=lambda: self._thread_task(wrapped_func, self.dash_loading_state), daemon=True).start()
 
     def _thread_task(self, target_func, state_dict):
         try: target_func()
@@ -811,8 +886,13 @@ class CzechInvestorApp:
             if lot['qty'] < 0.0001: self.ledger[t].pop(0)
             
             self.sales_history.append({
-                "ticker": t, "currency": CURRENCIES[t], "buy_date": lot['date'], "sell_date": today,
-                "qty": sold, "buy_price": float(lot.get('price_at_buy', 0)), "sell_price": price
+                "ticker": t, 
+                "currency": self.get_currency_for_ticker(t),
+                "buy_date": lot['date'], 
+                "sell_date": today,
+                "qty": sold, 
+                "buy_price": float(lot.get('price_at_buy', 0)), 
+                "sell_price": price
             })
             
         self.save_data()
@@ -945,7 +1025,12 @@ class CzechInvestorApp:
         process_tickers = set(list(self.ledger.keys()) + [s['ticker'] for s in self.sales_history]) if mode == "real" else TARGETS.keys()
 
         for t in process_tickers:
-            current_lots = self.ledger.get(t, [])
+            # --- Ochrana akumulačních ETF ---
+            meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
+            if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
+                continue # Přeskakujeme, tyto fondy dividendy nevyplácí
+            
+            current_lots = self.ledger.get(t,[])
             real_qty_held = sum(l['qty'] for l in current_lots)
             
             if mode == "real":
@@ -1095,9 +1180,16 @@ class CzechInvestorApp:
     # TAB 4: TUNING PORTFOLIA A EDITOR AKCIÍ
     # --------------------------------------------------------------------------
 
-    def setup_tuner_tab(self):
+    def setup_tuner_tab(self, index=None):
+        """Sestaví uživatelské rozhraní pro Monte Carlo tuning portfolia a připojí grafy."""
         self.tuner_frame = tk.Frame(self.notebook, bg="#FFF8E1")
-        self.notebook.add(self.tuner_frame, text="Tuning Portfolia")
+        
+        # DYNAMICKÉ UMÍSTĚNÍ: Pokud index není zadán, přidá se na konec. 
+        # Pokud je zadán (při refreshi), vloží se na původní místo.
+        if index is None:
+            self.notebook.add(self.tuner_frame, text="Tuning Portfolia")
+        else:
+            self.notebook.insert(index, self.tuner_frame, text="Tuning Portfolia")
         
         control_panel = tk.Frame(self.tuner_frame, bg="#FFF8E1", width=420, padx=15, pady=15)
         control_panel.pack(side=tk.LEFT, fill=tk.Y)
@@ -1261,7 +1353,13 @@ class CzechInvestorApp:
                 end_of_year = date(current_year, 12, 31)
 
                 for t in self.ordered_tickers:
-                    dy = 0.03 
+                    # --- Ochrana akumulačních ETF ---
+                    meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
+                    if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
+                        div_yields[t] = 0.0
+                        continue
+
+                    dy = 0.03
                     try:
                         ticker_obj = yf.Ticker(t)
                         hist_divs = ticker_obj.dividends
@@ -1558,15 +1656,22 @@ class CzechInvestorApp:
     # --------------------------------------------------------------------------
 
     def setup_dashboard_tab(self):
+        """Sestaví UI Dashboardu zobrazujícího historický výkon a daňové ovládání."""
         self.dash_frame = tk.Frame(self.notebook, bg="#ECEFF1")
         self.notebook.add(self.dash_frame, text="Statistiky & Daně")
         ctrl_panel = tk.Frame(self.dash_frame, bg="#ECEFF1")
         ctrl_panel.pack(fill=tk.X, padx=10, pady=10)
         
-        tk.Button(ctrl_panel, text="↻ AKTUALIZOVAT DATA", command=lambda: self.run_dash_with_loading(self.refresh_stats, "Přepočítávám historii..."), 
-                  font=("Arial", 12, "bold"), bg="#37474F", fg="white").pack(side=tk.LEFT)
-        tk.Button(ctrl_panel, text="📄 EXPORT PDF (DANĚ)", command=self.generate_tax_report, 
-                  font=("Arial", 12, "bold"), bg="#E65100", fg="white").pack(side=tk.RIGHT, padx=10)
+        # Uložení referencí na tlačítka pro možnost jejich deaktivace
+        self.btn_refresh_stats = tk.Button(ctrl_panel, text="↻ AKTUALIZOVAT DATA", 
+                                          command=lambda: self.run_dash_with_loading(self.refresh_stats, "Přepočítávám historii..."), 
+                                          font=("Arial", 12, "bold"), bg="#37474F", fg="white")
+        self.btn_refresh_stats.pack(side=tk.LEFT)
+        
+        self.btn_export_tax = tk.Button(ctrl_panel, text="📄 EXPORT PDF (DANĚ)", 
+                                        command=self.generate_tax_report, 
+                                        font=("Arial", 12, "bold"), bg="#E65100", fg="white")
+        self.btn_export_tax.pack(side=tk.RIGHT, padx=10)
         
         self.status_lbl = tk.Label(ctrl_panel, text="Čekám...", bg="#ECEFF1", fg="grey", font=("Arial", 12))
         self.status_lbl.pack(side=tk.LEFT, padx=10)
@@ -1582,6 +1687,13 @@ class CzechInvestorApp:
 
         self.dash_loading_state = self._create_loading_card(self.dash_frame)
 
+    def _set_dash_controls_state(self, state):
+        """Zapíná/vypíná ovládací prvky na kartě Statistiky během výpočtu."""
+        if hasattr(self, 'btn_refresh_stats') and self.btn_refresh_stats.winfo_exists():
+            self.btn_refresh_stats.config(state=state)
+        if hasattr(self, 'btn_export_tax') and self.btn_export_tax.winfo_exists():
+            self.btn_export_tax.config(state=state)
+            
     def refresh_stats(self):
         if os.path.exists(PORTFOLIO_FILE):
             self.root.after(0, lambda: self.status_lbl.config(text="Přepočítávám historii...", fg="blue"))
@@ -1636,7 +1748,7 @@ class CzechInvestorApp:
                             qty += sum(s['qty'] for s in sales_dt if s['ticker'] == t)
                             if qty > 0 and t in hist_prices.columns:
                                 p = hist_prices.at[date_idx, t] / (100.0 if t.endswith(".L") else 1.0)
-                                daily_val += (p * qty * fx.get(CURRENCIES.get(t, "USD"), 23.0))
+                                daily_val += (p * qty * fx.get(self.get_currency_for_ticker(t), 23.0))
                     else:
                         for t in all_tickers:
                             q_held = sum(l['qty'] for l in ledger_dt.get(t, []) if l['date'] <= date_idx)
@@ -1645,7 +1757,7 @@ class CzechInvestorApp:
                             total_qty = q_held + q_sold_later
                             if total_qty > 0 and t in hist_prices.columns:
                                 p = hist_prices.at[date_idx, t] / (100.0 if t.endswith(".L") else 1.0)
-                                daily_val += (p * total_qty * fx.get(CURRENCIES.get(t, "USD"), 23.0))
+                                daily_val += (p * total_qty * fx.get(self.get_currency_for_ticker(t), 23.0))
                     curve.at[date_idx] = daily_val
 
                 self.ax1.clear()
@@ -1691,6 +1803,12 @@ class CzechInvestorApp:
                     
                     year_divs = 0
                     for t in all_tickers:
+                        # --- Ochrana akumulačních ETF ---
+                        meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
+                        if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
+                            div_history[t].append(0) # Do grafu vrstev vložíme nulu
+                            continue
+
                         t_div = 0 
                         try:
                             d_data = yf.Ticker(t).dividends.loc[y_start:y_end]
@@ -1702,7 +1820,8 @@ class CzechInvestorApp:
                                     q = sum(l['qty'] for l in ledger_dt.get(t, []) if l['date'] < d_s)
                                     q += sum(s['qty'] for s in sales_dt if s['ticker'] == t 
                                              and s['buy_date'] < d_s and s['sell_date'] >= d_s)
-                                t_div += (amt / (100.0 if t.endswith(".L") else 1.0) * q * fx.get(CURRENCIES.get(t, "USD"), 23.0))
+                                currency = self.get_currency_for_ticker(t)
+                                t_div += (amt / (100.0 if t.endswith(".L") else 1.0) * q * fx.get(currency, 23.0))
                         except: pass
                         year_divs += t_div
                         div_history[t].append(t_div) 
@@ -1843,6 +1962,11 @@ class CzechInvestorApp:
         
         all_tickers = set(list(self.ledger.keys()) +[s['ticker'] for s in self.sales_history])
         for t in all_tickers:
+            # --- Ochrana akumulačních ETF ---
+            meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
+            if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
+                continue
+
             try:
                 divs = yf.Ticker(t).dividends
                 year_divs = divs[divs.index.year == year_to_report]
@@ -1859,10 +1983,12 @@ class CzechInvestorApp:
                     
                     if total_qty > 0.001:
                         if t.endswith(".L"): amount /= 100.0
-                        fx = rates.get(CURRENCIES.get(t, "USD"), 1.0)
+                        fx = rates.get(self.get_currency_for_ticker(t), 1.0)
                         gross_div_czk = total_qty * amount * fx
                         
-                        country = "USA" if CURRENCIES.get(t, "USD") == "USD" else "UK"
+                        # Použití detektoru země místo měny
+                        country = self.get_country_for_ticker(t)
+                        
                         if country == "USA": 
                             total_div_usa_gross += gross_div_czk
                             withheld = gross_div_czk * 0.15 
@@ -1930,10 +2056,14 @@ class CzechInvestorApp:
             v_ost = int(math.ceil(totals["p10_expense"]))
             xml.append(f'    <VetaO druh_prij="F" prijem_ost="{p_ost}" vydaj_ost="{v_ost}"/>')
 
+        # Rozdělení dividend v XML podle skutečné země
+        # V této metodě už máme totals, ale pokud chceme XML naprosto přesné, 
+        # portál finanční správy vyžaduje součty za jednotlivé státy.
         if totals['div_usa_gross'] > 0:
             xml.append(f'    <VetaZ stat="US" prijem_zahr="{int(totals["div_usa_gross"])}" dan_zap_zahr="{int(totals["div_usa_withheld"])}"/>')
         
         if totals['div_uk_gross'] > 0:
+            # Pro všechny evropské UCITS/UK tituly použijeme kód GB (Velká Británie)
             xml.append(f'    <VetaZ stat="GB" prijem_zahr="{int(totals["div_uk_gross"])}" dan_zap_zahr="0"/>')
 
         xml.append('  </DPFDP5>')
@@ -2076,7 +2206,7 @@ class CzechInvestorApp:
     # --------------------------------------------------------------------------
 
     def open_portfolio_editor(self):
-        """Spustí modální okno umožňující změnit skladbu portfolia s horizontálními posuvníky."""
+        """Spustí modální okno umožňující změnit skladbu portfolia s duálními scrollbary."""
         if self.editor_window is not None and self.editor_window.winfo_exists():
             self.editor_window.lift() 
             self.editor_window.focus_force()
@@ -2090,7 +2220,8 @@ class CzechInvestorApp:
         editor = self.editor_window
         editor.title("Editor Výběru Akcií")
         
-        editor.geometry("1300x750") 
+        # Rozšíření okna na 1350px pro pohodlné zobrazení dlouhých názvů ETF
+        editor.geometry("1350x750") 
         editor.grab_set() 
         
         main_container = tk.Frame(editor, padx=10, pady=10)
@@ -2118,16 +2249,15 @@ class CzechInvestorApp:
             cb.grid(row=idx//2, column=idx%2, sticky="w", padx=10)
             idx += 1
             
-        # KONTEJNER PRO SEZNAM A OBA POSUVNÍKY (Levý)
         avail_container = tk.Frame(left_frame)
         avail_container.pack(fill=tk.BOTH, expand=True, pady=5)
         
         vsb_avail = tk.Scrollbar(avail_container, orient="vertical")
         hsb_avail = tk.Scrollbar(avail_container, orient="horizontal")
+        
         list_available = tk.Listbox(avail_container, selectmode=tk.SINGLE, font=("Consolas", 12), activestyle='none',
                                     yscrollcommand=vsb_avail.set, xscrollcommand=hsb_avail.set)
         
-        # Rozmístění pomocí Gridu pro správné lícování posuvníků
         list_available.grid(row=0, column=0, sticky="nsew")
         vsb_avail.grid(row=0, column=1, sticky="ns")
         hsb_avail.grid(row=1, column=0, sticky="ew")
@@ -2154,20 +2284,22 @@ class CzechInvestorApp:
         tk.Frame(mid_frame).pack(fill=tk.Y, expand=True) 
         tk.Button(mid_frame, text="Přidat  >>>", width=14, bg="#E3F2FD", font=("Arial", 12, "bold"),
                   command=lambda: self._move_stock(list_available, list_current, "add", filter_vars)).pack(pady=10)
+        
         tk.Button(mid_frame, text="<<<  Odebrat", width=14, font=("Arial", 12, "bold"),
                   command=lambda: self._move_stock(list_available, list_current, "remove", filter_vars)).pack(pady=10)
+        
         tk.Frame(mid_frame).pack(fill=tk.Y, expand=True) 
 
         # --- 3. PRAVÝ PANEL (Moje Portfolio) ---
         right_frame = tk.LabelFrame(main_container, text="Moje Aktivní Portfolio", padx=10, pady=10, font=("Arial", 12, "bold"))
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         
-        # KONTEJNER PRO SEZNAM A OBA POSUVNÍKY (Pravý)
         curr_container = tk.Frame(right_frame)
         curr_container.pack(fill=tk.BOTH, expand=True)
         
         vsb_curr = tk.Scrollbar(curr_container, orient="vertical")
         hsb_curr = tk.Scrollbar(curr_container, orient="horizontal")
+        
         list_current = tk.Listbox(curr_container, selectmode=tk.SINGLE, font=("Consolas", 12), activestyle='none',
                                   yscrollcommand=vsb_curr.set, xscrollcommand=hsb_curr.set)
         
@@ -2188,13 +2320,12 @@ class CzechInvestorApp:
         self.health_msg = tk.Label(right_frame, text="", fg="grey", wraplength=350, justify="center", font=("Arial", 12))
         self.health_msg.pack(pady=10)
 
-        # SPODNÍ LIŠTA (Uložit)
+        # SPODNÍ LIŠTA
         btn_frame = tk.Frame(editor)
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=15, padx=20)
         tk.Button(btn_frame, text="💾 Uložit změny a Zavřít", bg="#2E7D32", fg="white", font=("Arial", 12, "bold"), 
                   command=lambda: self._save_portfolio_changes(editor, list_current, filter_vars), height=2).pack(fill=tk.X)
                   
-        # Nabindování dvojkliku
         list_available.bind("<Double-1>", lambda e: self._edit_stock_tags(list_available, list_available, list_current, filter_vars))
         list_current.bind("<Double-1>", lambda e: self._edit_stock_tags(list_current, list_available, list_current, filter_vars))
 
@@ -2227,6 +2358,7 @@ class CzechInvestorApp:
             return f"{left}{mid_char}{right}"
             
     def _refresh_lists(self, l_avail, l_curr, f_vars):
+        """Vymaže seznamy a naplní je znovu podle aktuálních filtrů, řazení a s ETF prefixem."""
         l_avail.delete(0, tk.END)
         l_curr.delete(0, tk.END)
         
@@ -2239,7 +2371,13 @@ class CzechInvestorApp:
             gr = m.get('growth', 0)
             bar_gro = self._get_growth_bar_visual(gr, GROWTH_SCALE)
             bar_div = self._get_bar_visual(dy, YIELD_SCALE, "▓")
-            return f"{t:<6} {bar_gro}  {bar_div}  {m['name'][:18]}"
+            
+            # --- Přidání prefixu ETF ---
+            display_name = m['name']
+            if m.get("sector") == "ETF":
+                display_name = f"ETF - {display_name}"
+            
+            return f"{t:<6} {bar_gro}  {bar_div}  {display_name}"
 
         def sort_key(item):
             meta = item[1]
@@ -2248,36 +2386,31 @@ class CzechInvestorApp:
             growth_bucket = int(np.clip(raw_growth / (GROWTH_SCALE / 5), -5, 5))
             return (growth_bucket, raw_yield)
 
-        my_items =[]
+        # Naplnění pravého seznamu (Moje)
+        my_items = []
         for t in current_tickers:
             meta = self.stock_db.get(t, {"name": "Unknown", "tags":[], "growth": 0, "yield": 0})
             my_items.append((t, meta))
-            
         my_items.sort(key=sort_key, reverse=True)
-        
         for t, meta in my_items:
             l_curr.insert(tk.END, format_row(t, meta))
-            
             is_violation = False
-            for tag in meta.get("tags",[]):
+            for tag in meta.get("tags", []):
                 if tag in f_vars and not f_vars[tag].get():
                     is_violation = True; break
             if is_violation: l_curr.itemconfig(tk.END, fg="red")
             
-        avail_items =[]
+        # Naplnění levého seznamu (Dostupné)
+        avail_items = []
         for t, meta in self.stock_db.items():
             if t in current_tickers: continue 
-            
             skip = False
             for tag in meta.get("tags", []):
                 if tag in f_vars and not f_vars[tag].get(): 
                     skip = True; break
             if skip: continue
-            
             avail_items.append((t, meta))
-            
         avail_items.sort(key=sort_key, reverse=True)
-        
         for t, meta in avail_items:
             l_avail.insert(tk.END, format_row(t, meta))
             
@@ -2321,7 +2454,7 @@ class CzechInvestorApp:
         # VALIDACE MĚNY
         currency = found_info.get('currency', '').upper()
         # UK akcie mají měnu buď GBP nebo GBp (pence)
-        is_uk = currency in ["GBP", "GBP"]
+        is_uk = currency in ["GBP", "GBP", "GBP", "GBp"]
         is_us = currency == "USD"
         
         if not (is_uk or is_us):
@@ -2334,28 +2467,69 @@ class CzechInvestorApp:
         # Sjednocení symbolu měny pro vnitřní logiku aplikace
         final_currency = "GBP" if is_uk else "USD"
 
+        # --- PRIIPs a ETF LOGIKA ---
+        quote_type = found_info.get('quoteType', '').upper()
+        is_etf = quote_type in ['ETF', 'MUTUALFUND']
+        
+        sector = found_info.get('sector', 'Unknown')
+        name = found_info.get('shortName') or found_info.get('longName') or final_ticker
+        etf_type = None
+        
+        if is_etf:
+            # Kontrola PRIIPs (Americká ETF nemají koncovku burzy .L apod.)
+            if "." not in final_ticker and "UCITS" not in name.upper():
+                messagebox.showerror("Regulace PRIIPs", 
+                                     f"Titul {final_ticker} ({name}) je americké ETF.\n\n"
+                                     "Z důvodu evropské regulace PRIIPs nemohou retailoví investoři v ČR "
+                                     "americká ETF běžně nakupovat.\n\n"
+                                     "Vyhledejte prosím evropskou UCITS alternativu (např. na londýnské burze "
+                                     "s koncovkou .L, jako VUSA.L nebo CSPX.L).", 
+                                     parent=self.editor_window)
+                return
+                
+            sector = "ETF"
+            # Dotaz na typ ETF (Zásadní pro daně a kalendář)
+            is_acc = messagebox.askyesno("Typ fondu (ETF)", 
+                                         f"Nalezeno ETF: {name}\n\n"
+                                         "Je tento fond AKUMULAČNÍ?\n"
+                                         "(Tj. nevyplácí dividendy na účet, ale automaticky je reinvestuje do své hodnoty?)\n\n"
+                                         "• Zvolte 'Ano' pro Akumulační (bez daní z dividend)\n"
+                                         "• Zvolte 'Ne' pro Distribuční (vyplácí hotovost)",
+                                         parent=self.editor_window)
+            etf_type = "Acc" if is_acc else "Dist"
+        # ---------------------------------
+
         try:
             hist = found_stock_obj.history(period="2y")
-            growth_2y = ((hist['Close'].iloc[-1] / hist['Close'].iloc[0]) - 1.0) * 100 if len(hist) > 1 else 0
+            if len(hist) > 1:
+                growth_2y = ((hist['Close'].iloc[-1] / hist['Close'].iloc[0]) - 1.0) * 100
+            else:
+                growth_2y = 0
             
-            raw_yield = found_info.get('dividendYield') or found_info.get('trailingAnnualDividendYield') or 0
-            div_yield = raw_yield * 100 if 0 < raw_yield < 0.5 else raw_yield
-            
-            sector = found_info.get('sector', 'Unknown')
-            name = found_info.get('shortName') or found_info.get('longName') or final_ticker
+            # Pokud je ETF akumulační, natvrdo anulujeme dividendu
+            if is_etf and etf_type == "Acc":
+                div_yield = 0.0
+            else:
+                raw_yield = found_info.get('dividendYield') or found_info.get('trailingAnnualDividendYield') or 0
+                div_yield = raw_yield * 100 if 0 < raw_yield < 0.5 else raw_yield
             
             div_str = f"{div_yield:.2f}".replace('.', ',')
             gro_str = f"{growth_2y:.1f}".replace('.', ',')
             
+            # Dotaz na přidání do databáze
             if messagebox.askyesno("Nový titul nalezen", 
-                                   f"Ticker: {final_ticker}\nNázev: {name}\nMěna: {final_currency}\nSektor: {sector}\n"
+                                   f"Ticker: {final_ticker}\nNázev: {name}\nSektor: {sector}\n"
                                    f"Dividenda: {div_str}%\nRůst (2r): {gro_str}%\n\n"
                                    f"Chcete přidat do databáze?", parent=self.editor_window):
                 
-                tags = []
+                tags =[]
                 confirmed = False
+                
+                # Malé okno pro kategorizaci rizik
                 tag_window = tk.Toplevel(self.editor_window)
                 tag_window.title("Kategorizace")
+                
+                # Pozicování k myši
                 x = self.root.winfo_pointerx() + 15
                 y = self.root.winfo_pointery() + 15
                 tag_window.geometry(f"+{x}+{y}")
@@ -2364,6 +2538,7 @@ class CzechInvestorApp:
                 
                 tag_vars = {}
                 tk.Label(tag_window, text=f"Označte rizika pro {final_ticker}:", font=("Arial", 12, "bold")).pack(pady=10, padx=20)
+                
                 for k, v in TAGS.items():
                     var = tk.BooleanVar()
                     tag_vars[k] = var
@@ -2378,14 +2553,19 @@ class CzechInvestorApp:
                     tag_window.destroy()
                 
                 tk.Button(tag_window, text="Potvrdit a Uložit", command=confirm_tags, bg="#E3F2FD", font=("Arial", 12, "bold")).pack(pady=20)
+                
+                # Čekání na zavření okna kategorizace
                 self.editor_window.wait_window(tag_window)
                 
                 if confirmed:
-                    # Ukládáme i 'currency' pro budoucí načtení
-                    self.stock_db[final_ticker] = {
+                    # Ukládáme i typ ETF do DB
+                    meta_data = {
                         "name": name, "sector": sector, "tags": tags,
                         "yield": div_yield, "growth": growth_2y, "currency": final_currency
                     }
+                    if is_etf: meta_data["etf_type"] = etf_type
+                    
+                    self.stock_db[final_ticker] = meta_data
                     self._refresh_lists(l_avail, l_curr, f_vars)
                 
         except Exception as e:
@@ -2464,9 +2644,13 @@ class CzechInvestorApp:
             return
 
         # 1. Základní parametry (počet pozic)
-        if count < LIMITS["MIN_POSITIONS"]:
+        # Pokud má investor ETF, stačí mu pro diverzifikaci i méně než 8 titulů.
+        has_etf = any(self.stock_db.get(t, {}).get("sector") == "ETF" for t in current_tickers)
+        min_pos = 4 if has_etf else LIMITS["MIN_POSITIONS"]
+
+        if count < min_pos:
             score -= 20
-            warnings.append(f"Máte málo akcií ({count}). Doporučeno min. {LIMITS['MIN_POSITIONS']}.")
+            warnings.append(f"Máte málo pozic ({count}). Doporučeno min. {min_pos}.")
         elif count > LIMITS["MAX_POSITIONS"]:
             score -= 10
             warnings.append(f"Příliš mnoho akcií ({count}). Hrozí nepřehlednost.")
@@ -2474,48 +2658,46 @@ class CzechInvestorApp:
         sectors = {}
         bdc_count = 0
         growth_count = 0 
-        yield_count = 0 # Počítadlo příjmových titulů
+        yield_count = 0 
 
         for t in current_tickers:
             meta = self.stock_db.get(t, {})
-            
-            # Sektorová analýza
             sec = meta.get("sector", "Unknown")
             sectors[sec] = sectors.get(sec, 0) + 1
             
-            # Detekce rizikových BDC/mREIT
             if t in ["MAIN", "HTGC", "ARCC", "OBDC"] or "Capital" in meta.get("name", ""):
                 bdc_count += 1
-            
-            # Detekce růstového potenciálu (2r růst > 10 %)
             if meta.get("growth", 0) > 10.0:
                 growth_count += 1
-            
-            # Detekce dividendového cash-flow (Výnos > 2.5 %)
             if meta.get("yield", 0) > 2.5:
                 yield_count += 1
                 
-        # 2. Vyhodnocení koncentrace a rizik
+        # 2. Vyhodnocení koncentrace (PŘESKAKUJE SEKTOR ETF)
         for sec, num in sectors.items():
+            if sec == "ETF": continue # ETF jsou vnitřně diverzifikované, nevadí vysoké zastoupení
+            
             if num / count > LIMITS["MAX_SECTOR_WEIGHT"]: 
                 score -= 15
                 warnings.append(f"Vysoká koncentrace v sektoru {sec}.")
                 
+        # 3. Vyhodnocení rizikových finančních firem
         if bdc_count / count > 0.3:
             score -= 15
             warnings.append("Vysoký podíl rizikových finančních firem (BDC).")
 
-        # 3. Vyhodnocení Růstu vs. Dividendy
+        # 4. Vyhodnocení Růstu vs. Dividendy
         growth_ratio = growth_count / count
         if growth_ratio < LIMITS["MIN_GROWTH_RATIO"]:
-            score -= 20
-            warnings.append(f"Nízký růstový potenciál ({int(growth_ratio*100)}% růstových akcií).")
+            score -= 15
+            warnings.append(f"Nízký růstový potenciál ({int(growth_ratio*100)}% růstových titulů).")
 
-        # Kontrola dostatečného cash-flow
         yield_ratio = yield_count / count
         if yield_ratio < LIMITS["MIN_YIELD_RATIO"]:
-            score -= 20
-            warnings.append(f"Slabé dividendové cash-flow ({int(yield_ratio*100)}% výnosových akcií).")
+            score -= 15
+            warnings.append(f"Slabé cash-flow ({int(yield_ratio*100)}% výnosových titulů).")
+
+        # Ochrana proti podtečení nuly
+        score = max(0, score)
 
         # Aktualizace UI
         self.health_progress['value'] = score
@@ -2529,17 +2711,23 @@ class CzechInvestorApp:
     def _save_portfolio_changes(self, window, l_curr, f_vars):
         """Propíše dočasné změny z editoru do ostrého nastavení a uloží do JSONu."""
         global TARGETS, CURRENCIES
+        
+        # 1. Zjištění aktuální pozice záložky v Notebooku, aby se po refreshi nepřehodilo pořadí
+        try:
+            current_index = self.notebook.index(self.tuner_frame)
+        except:
+            current_index = None # Fallback pro jistotu
+
+        # 2. Propis dat
         TARGETS.clear()
         TARGETS.update(self.temp_targets)
         
-        # Okamžitá registrace měn nově přidaných akcií do globální paměti
         for t, meta in self.stock_db.items():
             if t in TARGETS and "currency" in meta:
                 CURRENCIES[t] = meta["currency"]
 
         self.ethical_filters = {k: v.get() for k, v in f_vars.items()}
         
-        # Automatické vyvážení vah, pokud došlo ke změně počtu titulů
         cnt = len(TARGETS)
         if cnt > 0:
             current_sum = sum(TARGETS.values())
@@ -2550,14 +2738,42 @@ class CzechInvestorApp:
         self.stock_db_from_json = self.stock_db
         self.save_data()
         
+        # 3. Refresh záložky Tuningu na původním indexu
         self.tuner_data_loaded = False
         window.destroy()
         
-        # Reset a znovunačtení záložky Tuning
         self.notebook.forget(self.tuner_frame)
-        self.setup_tuner_tab()
+        self.setup_tuner_tab(index=current_index) # Vrátí záložku tam, kde byla
         self.notebook.select(self.tuner_frame)
 
+        
+    def get_currency_for_ticker(self, ticker):
+        """Bezpečně zjistí měnu pro daný ticker z konfigurace, DB nebo odhadem."""
+        # 1. Priorita: Slovník CURRENCIES (pro tituly definované přímo v kódu)
+        if ticker in CURRENCIES:
+            return CURRENCIES[ticker]
+        
+        # 2. Priorita: Metadata v stock_db (pro tituly přidané uživatelem)
+        db = getattr(self, 'stock_db', DEFAULT_STOCK_DB)
+        if ticker in db and "currency" in db[ticker]:
+            return db[ticker]["currency"]
+            
+        # 3. Fallback: Odhad podle sufixu (Yahoo standard)
+        return "GBP" if ticker.endswith(".L") else "USD"
+
+    def get_country_for_ticker(self, ticker):
+        """Určí zemi domicilu pro daňové účely (USA vs. UK/UCITS)."""
+        # 1. Priorita: Metadata v databázi (pokud existují)
+        db = getattr(self, 'stock_db', DEFAULT_STOCK_DB)
+        if ticker in db and "country" in db[ticker]:
+            return db[ticker]["country"]
+            
+        # 2. Sekundární pravidlo: Cokoliv s koncovkou .L je Londýn (UK/UCITS)
+        if ticker.endswith(".L"):
+            return "UK"
+        
+        # 3. Default (JNJ, AAPL atd.) je USA
+        return "USA"
 
     # --------------------------------------------------------------------------
     # NÁSTROJE UI (INTERAKTIVNÍ GRAFY A TOOLTIPY)
@@ -2609,7 +2825,7 @@ class CzechInvestorApp:
         """Skryje plovoucí okénko."""
         if self.pie_tooltip: self.pie_tooltip.place_forget()
 
-# --------------------------------------------------------------------------
+    # --------------------------------------------------------------------------
     # TAB 6: ODMĚNA PRO AUTORA (DONATION)
     # --------------------------------------------------------------------------
 
@@ -2677,7 +2893,6 @@ class CzechInvestorApp:
                 self.root.after(0, lambda: self.wise_qr_lbl.config(text="Nelze načíst obrázek.\nPoužijte tlačítko níže."))
             
         threading.Thread(target=fetch_qrs, daemon=True).start()
-        
 
 # ==============================================================================
 # 4. SPUŠTĚNÍ APLIKACE
