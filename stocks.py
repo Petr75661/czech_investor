@@ -175,9 +175,17 @@ def _worker_simulation_task(n_sims, active_indices, fixed_weights, target_sum,
     # Generování náhodných vah v zadaných mezích
     while len(valid_w_list) < n_sims and iters < max_iters:
         iters += 1
-        w_act = np.random.uniform(min_w, max_w, (batch_size, len(active_indices)))
+        
+        # Ošetření pro 1 akcii nebo nulové rozmezí
+        if min_w >= max_w:
+            w_act = np.full((batch_size, len(active_indices)), min_w)
+        else:
+            w_act = np.random.uniform(min_w, max_w, (batch_size, len(active_indices)))
+            
         sums = np.sum(w_act, axis=1, keepdims=True)
+        sums[sums == 0] = 1.0 # Ochrana proti dělení nulou
         w_act = w_act / sums * target_sum
+        
         mask = np.all((w_act >= min_w - eps) & (w_act <= max_w + eps), axis=1)
         good_batches = w_act[mask]
         for gw in good_batches:
@@ -193,11 +201,12 @@ def _worker_simulation_task(n_sims, active_indices, fixed_weights, target_sum,
     port_yields = np.dot(weights_chunk, stock_divs)
     div_income_czk = port_yields * 100000 
     
-    start_vals = np.dot(weights_chunk, stock_growths)
-    port_growths = ((1.0 / start_vals) - 1.0) * 100
-    
     port_period_rets = np.dot(sim_returns_values, weights_chunk.T)
     cum_returns = (1 + port_period_rets).cumprod(axis=0)
+    
+    # Skutečný celkový růst (Total Return) s reinvesticí dividend za celou periodu
+    port_growths = (cum_returns[-1, :] - 1.0) * 100
+    
     running_max = np.maximum.accumulate(cum_returns, axis=0)
     drawdowns = (cum_returns - running_max) / running_max
     max_dds = np.min(drawdowns, axis=0) * 100 
@@ -769,7 +778,7 @@ class CzechInvestorApp:
                 except: pass
                 break
                 
-        # 2. NOVÉ: Zjištění množství, které už je připraveno ve spodní tabulce ke schválení
+        # 2. Zjištění množství, které už je připraveno ve spodní tabulce ke schválení
         staged_qty = 0.0
         for item in self.staging_tree.get_children():
             row_vals = self.staging_tree.item(item)['values']
@@ -1214,7 +1223,8 @@ class CzechInvestorApp:
         
         title_frame = tk.Frame(control_panel, bg="#FFF8E1")
         title_frame.pack(fill=tk.X, pady=(0, 10))
-        tk.Label(title_frame, text=f"Optimalizace ({int(MIN_W*100)}-{int(MAX_W*100)}%)", font=("Arial", 18, "bold"), bg="#FFF8E1").pack(side=tk.LEFT)
+        self.lbl_tuner_title = tk.Label(title_frame, text=f"Optimalizace ({int(MIN_W*100)}-{int(MAX_W*100)}%)", font=("Arial", 18, "bold"), bg="#FFF8E1")
+        self.lbl_tuner_title.pack(side=tk.LEFT)
         
         # Uložení reference na tlačítko Změnit akcie
         self.btn_change_stocks = tk.Button(title_frame, text="⚙️ Změnit akcie", command=self.open_portfolio_editor, font=("Arial", 12), bg="#DDD")
@@ -1438,26 +1448,48 @@ class CzechInvestorApp:
             if np.sum(base_w_exact) > 0:
                 base_w_exact = base_w_exact / np.sum(base_w_exact) 
                 b_div = np.dot(base_w_exact, self.tuner_stock_divs) * 100000
-                b_start_vals = np.dot(base_w_exact, self.tuner_stock_growths)
-                b_growth = ((1.0 / b_start_vals) - 1.0) * 100 if b_start_vals > 0 else 0
+                
                 b_rets = np.dot(self.tuner_period_returns.values, base_w_exact.T)
                 b_cum = (1 + b_rets).cumprod(axis=0)
+                
+                # Skutečný Total Return se započítáním reinvestice
+                b_growth = (b_cum[-1] - 1.0) * 100 if len(b_cum) > 0 else 0
+                
                 b_run_max = np.maximum.accumulate(b_cum, axis=0)
                 b_dd = np.min((b_cum - b_run_max) / b_run_max, axis=0) * 100
                 self.root.after(0, lambda: self._update_base_labels(b_div, b_dd, b_growth))
             
-            if len(active_indices) > 0:
-                if target_sum < len(active_indices)*MIN_W-EPS or target_sum > len(active_indices)*MAX_W+EPS:
-                    self.root.after(0, lambda: messagebox.showerror("Chyba", "Zafixované váhy neumožňují rozdělení zbytku."))
-                    return
+            adj_min_w = MIN_W
+            adj_max_w = MAX_W
             
+            n_active = len(active_indices)
+            if n_active > 0:
+                if target_sum <= 0:
+                    adj_min_w = 0.0
+                    adj_max_w = 0.0
+                elif n_active == 1:
+                    adj_min_w = target_sum
+                    adj_max_w = target_sum
+                else:
+                    avg_w = target_sum / n_active
+                    # Pokud by matematicky nebylo možné trefit sumu s fixními limity (příliš mnoho nebo příliš málo akcií),
+                    # dynamicky upravíme meze, aby generátor vždy našel alespoň jednu platnou variantu vah.
+                    if (MIN_W * n_active > target_sum - EPS) or (MAX_W * n_active < target_sum + EPS):
+                        spread = avg_w * 0.5
+                        adj_min_w = max(0.0, avg_w - spread)
+                        adj_max_w = min(1.0, avg_w + spread)
+            
+            # Vizuální aktualizace nadpisu s použitými dynamickými limity
+            if hasattr(self, 'lbl_tuner_title'):
+                self.root.after(0, lambda min_val=adj_min_w, max_val=adj_max_w: self.lbl_tuner_title.config(text=f"Optimalizace ({int(min_val*100)}-{int(max_val*100)}%)"))
+
             chunk_size = n_sims // n_cores
             period_returns_vals = self.tuner_period_returns.values 
             
             tasks =[]
             for _ in range(n_cores):
                 tasks.append((chunk_size, active_indices, fixed_weights, target_sum, 
-                                MIN_W, MAX_W, EPS, self.tuner_stock_divs, self.tuner_stock_growths, period_returns_vals))
+                                adj_min_w, adj_max_w, EPS, self.tuner_stock_divs, self.tuner_stock_growths, period_returns_vals))
             
             with multiprocessing.Pool(processes=n_cores) as pool:
                 chunk_results = pool.starmap(_worker_simulation_task, tasks)
@@ -1610,7 +1642,8 @@ class CzechInvestorApp:
                                          color='#E65100', fontsize=11, fontweight='bold')
             
         base_w = np.array([self.tuner_base_weights.get(t, 0) for t in self.ordered_tickers])
-        norm_prices = self.tuner_hist_prices / self.tuner_hist_prices.iloc[-1] 
+        # Normalizace k prvnímu dni, aby investice začínala na 100k a rostla v čase
+        norm_prices = self.tuner_hist_prices / self.tuner_hist_prices.iloc[0] 
         curve_base = norm_prices.dot(base_w) * 100000
         curve_new = norm_prices.dot(weights) * 100000
         
@@ -1619,7 +1652,7 @@ class CzechInvestorApp:
         
         if hasattr(self, 'tuner_spy_prices') and not self.tuner_spy_prices.empty:
             spy_aligned = self.tuner_spy_prices.reindex(norm_prices.index).ffill().bfill()
-            curve_spy = (spy_aligned / spy_aligned.iloc[-1]) * 100000
+            curve_spy = (spy_aligned / spy_aligned.iloc[0]) * 100000
             self.ax_curve.plot(curve_spy.index, curve_spy.values, color='#D32F2F', linestyle=':', linewidth=2, label='S&P 500 (SPY)')
         
         self.ax_curve.set_title("Simulace 100k Kč (Kapitálový Růst)")
@@ -1632,19 +1665,18 @@ class CzechInvestorApp:
             sb = curve_base[curve_base.index.year == y]
             sn = curve_new[curve_new.index.year == y]
             if len(sb) > 0:
-                ratio_price = sb.iloc[0] / 100000.0 
-                div_b = ratio_price * np.dot(base_w, self.tuner_stock_divs) * 100000
-                div_n = ratio_price * np.dot(weights, self.tuner_stock_divs) * 100000
-                val_b = (sb.iloc[-1] - sb.iloc[0]) + div_b
-                val_n = (sn.iloc[-1] - sn.iloc[0]) + div_n
+                # Historická data již obsahují dividendy (Total Return),
+                # stačí tedy odečíst konec roku od začátku roku.
+                val_b = sb.iloc[-1] - sb.iloc[0]
+                val_n = sn.iloc[-1] - sn.iloc[0]
                 bars_base.append(val_b)
                 bars_new.append(val_n)
                 lbls.append(str(y))
                 
         x = np.arange(len(lbls))
         width = 0.35
-        self.ax_bars.bar(x - width/2, bars_base, width, label='Aktuální (Zisk+Div)', color='lightgrey')
-        self.ax_bars.bar(x + width/2, bars_new, width, label='Nové (Zisk+Div)', color='#4CAF50')
+        self.ax_bars.bar(x - width/2, bars_base, width, label='Aktuální (Total Return)', color='lightgrey')
+        self.ax_bars.bar(x + width/2, bars_new, width, label='Nové (Total Return)', color='#4CAF50')
         self.ax_bars.set_xticks(x)
         self.ax_bars.set_xticklabels(lbls)
         self.ax_bars.set_title("Roční Zisk [Kč]")
@@ -1873,8 +1905,14 @@ class CzechInvestorApp:
                 self.ax2.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
                 
                 x = np.arange(len(growth_vals))
+                
+                # Pro skládaný graf zajistíme, že pokud je růst ceny záporný (ztráta), 
+                # dividenda se nevykreslí do mínusu, ale normálně od nuly nahoru.
+                growth_arr = np.array(growth_vals)
+                div_bottoms = np.where(growth_arr > 0, growth_arr, 0)
+                
                 self.ax2.bar(x, growth_vals, label='Růst ceny', color=colors)
-                self.ax2.bar(x, div_vals, bottom=growth_vals, label='Dividendy', color='#FFC107')
+                self.ax2.bar(x, div_vals, bottom=div_bottoms, label='Dividendy', color='#FFC107')                
                 self.ax2.grid(True, linestyle='--', alpha=0.5)
                 self.ax2.set_ylabel("Zisk [Kč]")
                 
