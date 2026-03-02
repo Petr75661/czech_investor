@@ -148,7 +148,7 @@ DEFAULT_STOCK_DB = {
 
 # Parametry pro Monte Carlo tuning portfolia
 MIN_W = 0.03
-MAX_W = 0.13
+MAX_W = 0.10
 EPS = 0.001
 ENFORCEMENT_W = 0.5  # Důraz na trefení čísla na slideru
 STABILITY_W = 0.5    # Důraz na minimální změnu existujících vah
@@ -2717,17 +2717,19 @@ class CzechInvestorApp:
             current_index = self.notebook.index(self.tuner_frame)
         except:
             current_index = None # Fallback pro jistotu
-
-        # 2. Propis dat
+            
+        # 2. Propis dat do paměti aplikace
         TARGETS.clear()
         TARGETS.update(self.temp_targets)
         
+        # Okamžitá registrace měn nově přidaných akcií do globální paměti
         for t, meta in self.stock_db.items():
             if t in TARGETS and "currency" in meta:
                 CURRENCIES[t] = meta["currency"]
 
         self.ethical_filters = {k: v.get() for k, v in f_vars.items()}
         
+        # Automatické vyvážení vah, pokud došlo ke změně počtu titulů
         cnt = len(TARGETS)
         if cnt > 0:
             current_sum = sum(TARGETS.values())
@@ -2738,14 +2740,27 @@ class CzechInvestorApp:
         self.stock_db_from_json = self.stock_db
         self.save_data()
         
-        # 3. Refresh záložky Tuningu na původním indexu
         self.tuner_data_loaded = False
         window.destroy()
         
+        # 3. Reset a znovunačtení záložky Tuning na původním indexu
         self.notebook.forget(self.tuner_frame)
-        self.setup_tuner_tab(index=current_index) # Vrátí záložku tam, kde byla
+        
+        # Ošetření pro metodu setup_tuner_tab, pokud by nepodporovala index
+        try:
+            self.setup_tuner_tab(index=current_index)
+        except TypeError:
+            self.setup_tuner_tab() # Fallback, pokud parametr index v metodě chybí
+            
         self.notebook.select(self.tuner_frame)
-
+        
+        # AUTOMATICKÉ SPUŠTĚNÍ SIMULACE
+        # Počkáme 200 ms na překreslení UI a pak automaticky zavoláme stejnou funkci,
+        # kterou jinak volá oranžové tlačítko "NAČÍST DATA & SIMULOVAT".
+        self.root.after(500, lambda: self.run_tuner_with_loading(
+            lambda: self.initialize_tuner_data(force_download=True), 
+            "Stahuji data a simuluji..."
+        ))
         
     def get_currency_for_ticker(self, ticker):
         """Bezpečně zjistí měnu pro daný ticker z konfigurace, DB nebo odhadem."""
