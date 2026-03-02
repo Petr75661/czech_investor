@@ -724,17 +724,22 @@ class CzechInvestorApp:
             except Exception as e: print(f"Skipping {t}: {e}")
 
     def fill_entry_from_proposal(self, event):
+        """Přenese hodnoty z vybraného návrhu nákupu do formuláře."""
         selection = self.buy_tree.selection()
         if not selection: return
         vals = self.buy_tree.item(selection[0])['values']
         self.real_ticker.delete(0, tk.END)
         self.real_ticker.insert(0, vals[0])
         
-        clean_qty = str(vals[6]).replace('»', '').replace('«', '').strip()
+        # Očištění o vizuální znaky (» a «) a převod čárky zpět na TEČKU pro brokera
+        clean_qty = str(vals[6]).replace('»', '').replace('«', '').replace(',', '.').strip()
         self.real_qty.delete(0, tk.END)
         self.real_qty.insert(0, clean_qty) 
+        
+        # Převod čárky na tečku i u ceny, ať je to pro kopírování do brokera konzistentní
+        clean_price = str(vals[2]).replace(',', '.').strip()
         self.real_price.delete(0, tk.END)
-        self.real_price.insert(0, str(vals[2]))
+        self.real_price.insert(0, clean_price)
 
     def add_manual_entry(self):
         t = self.real_ticker.get().strip()
