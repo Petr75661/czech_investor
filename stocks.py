@@ -759,6 +759,7 @@ class CzechInvestorApp:
             messagebox.showerror("Chyba", "Neplatný formát čísel nebo data (RRRR-MM-DD).")
             return
 
+        # 1. Zjištění původního návrhu z horní tabulky
         suggested_qty = 0.0
         for item in self.buy_tree.get_children():
             row_vals = self.buy_tree.item(item)['values']
@@ -768,14 +769,26 @@ class CzechInvestorApp:
                 except: pass
                 break
                 
-        remaining = suggested_qty - entered_qty
+        # 2. NOVÉ: Zjištění množství, které už je připraveno ve spodní tabulce ke schválení
+        staged_qty = 0.0
+        for item in self.staging_tree.get_children():
+            row_vals = self.staging_tree.item(item)['values']
+            if str(row_vals[0]) == t:
+                staged_str = str(row_vals[2]).replace(',', '.').strip()
+                try: staged_qty += float(staged_str)
+                except: pass
 
+        # 3. Výpočet reálného zbytku (Návrh - To co už čeká - To co zadávám teď)
+        remaining = suggested_qty - staged_qty - entered_qty
+
+        # Do čekací tabulky vkládáme vizuálně s čárkou
         self.staging_tree.insert("", "end", values=(t, d, q.replace('.', ','), p.replace('.', ','), "❌"))
         
+        # Přepsání políčka pro případný další frakční nákup (s tečkou pro IBKR)
         self.real_qty.delete(0, tk.END)
         if remaining > 0.001:
-            self.real_qty.insert(0, str(round(remaining, 3)).replace('.', ','))
-            
+            self.real_qty.insert(0, str(round(remaining, 3)))
+
     def delete_staging_row(self, event):
         item = self.staging_tree.selection()
         if item: self.staging_tree.delete(item)
