@@ -148,7 +148,7 @@ DEFAULT_STOCK_DB = {
 
 # Parametry pro Monte Carlo tuning portfolia
 MIN_W = 0.03
-MAX_W = 0.10
+MAX_W = 0.12
 EPS = 0.001
 ENFORCEMENT_W = 0.5  # Důraz na trefení čísla na slideru
 STABILITY_W = 0.5    # Důraz na minimální změnu existujících vah
