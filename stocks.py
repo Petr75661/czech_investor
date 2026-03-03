@@ -415,9 +415,10 @@ class CzechInvestorApp:
         self.sell_price_entry.delete(0, tk.END)
         self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
 
-    def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=3):
+    def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=4):
         """Robustní stahovač. Zajišťuje, že se stáhnou validní data pro VŠECHNY požadované tickery."""
         import time
+        import numpy as np
         
         # Sjednocení vstupu (Yahoo Finance přijímá string oddělený mezerou nebo rovnou list)
         if isinstance(tickers, str):
@@ -435,31 +436,39 @@ class CzechInvestorApp:
                 if data.empty or 'Close' not in data:
                     raise ValueError("Yahoo Finance nevrátil žádná data nebo chybí sloupec 'Close'.")
                 
-                close_data = data['Close']
+                # Nahrazení nesmyslných nulových cen za NaN
+                close_data = data['Close'].replace(0.0, np.nan)
                 missing =[]
                 
-                # Hloubková kontrola, zda Yahoo tajně nevynechalo některou akcii (nebo nevrátilo jen NaN)
+                # Hloubková kontrola, zda Yahoo nevynechalo některou akcii
                 if isinstance(close_data, pd.DataFrame):
                     for t in expected_tickers:
-                        if t not in close_data.columns or close_data[t].isna().all():
+                        # dropna().empty zkontroluje, zda sloupec obsahuje alespoň jednu platnou hodnotu
+                        if t not in close_data.columns or close_data[t].dropna().empty:
                             missing.append(t)
                 else:
-                    # Pokud stahujeme jen jeden ticker, vrací se Series (jeden sloupec bez jména)
-                    if close_data.isna().all():
-                        missing = expected_tickers
-                        
+                    # Pokud se vrátil jen jeden sloupec (Series), zjistíme, které akcie chybí
+                    if len(expected_tickers) > 1:
+                        succ_ticker = close_data.name if hasattr(close_data, 'name') else None
+                        missing = [t for t in expected_tickers if t != succ_ticker]
+                        if close_data.dropna().empty:
+                            missing = expected_tickers
+                    else:
+                        if close_data.dropna().empty:
+                            missing = expected_tickers
+                            
                 if missing:
                     raise ValueError(f"Chybí nebo jsou poškozená data pro: {', '.join(missing)}")
                     
-                # Pokud kód dojde až sem, data jsou kompletní a v pořádku
+                # Pokud kód dojde až sem, data jsou kompletní a bez nul
                 return data
                 
             except Exception as e:
                 print(f"Pokus {i+1} o stažení selhal: {e}")
                 if i < max_retries - 1:
-                    time.sleep(1.0 + i)  # Progresivní pauza (1s, 2s...) před dalším pokusem
+                    time.sleep(1.0 + i)  # Progresivní pauza před dalším pokusem
                     
-        # Pokud vše selže, vracíme prázdnou tabulku (volající funkce to zachytí a zobrazí GUI hlášku)
+        # Pokud vše selže (vyčerpán limit), vracíme prázdnou tabulku (volající funkce vyvolá Messagebox)
         return pd.DataFrame()
 
     # --------------------------------------------------------------------------
@@ -1403,7 +1412,7 @@ class CzechInvestorApp:
                     self.root.after(0, lambda: self.hide_loading(self.tuner_loading_state))
                     return
                 
-                full_raw_data = downloaded['Close']
+                full_raw_data = downloaded['Close'].replace(0.0, np.nan)
                 
                 data = full_raw_data[tickers].ffill().bfill()
                 if "SPY" in full_raw_data.columns: self.tuner_spy_prices = full_raw_data["SPY"].ffill().bfill()
@@ -1821,7 +1830,8 @@ class CzechInvestorApp:
                     self.root.after(0, lambda: self.status_lbl.config(text="Chyba stahování", fg="red"))
                     return
                 
-                hist_prices = downloaded['Close'].ffill().bfill()
+                # Očištění o nuly těsně před zaplněním děr (ffill)
+                hist_prices = downloaded['Close'].replace(0.0, np.nan).ffill().bfill()
                 if isinstance(hist_prices, pd.Series): hist_prices = hist_prices.to_frame(name=all_tickers[0])
                 
                 # víkendy a svátky
