@@ -1152,33 +1152,46 @@ class CzechInvestorApp:
                     
                     # Výpočet trendu pro projekci (hledáme stejnou dividendu v loňském roce)
                     closest_last = None
+                    matched_d_last = None
                     min_diff = 365
                     target_day_of_year = latest_conf_date.timetuple().tm_yday
                     
-                    for d_last, amt_last in divs_last_yr.items():
-                        diff = abs(d_last.timetuple().tm_yday - target_day_of_year)
+                    for d_last_iter, amt_last in divs_last_yr.items():
+                        diff = abs(d_last_iter.timetuple().tm_yday - target_day_of_year)
                         if diff < 45 and diff < min_diff:
                             min_diff = diff
                             closest_last = amt_last
+                            matched_d_last = d_last_iter
 
-                    if closest_last:
+                    if closest_last and matched_d_last:
                         trend_ratio = latest_conf_amt / closest_last
-                        if trend_ratio < 1.0: growth_factor = trend_ratio
-                        elif trend_ratio > 1.0:
-                            closest_prev = None
-                            min_diff_prev = 365
-                            # Odvození data před 2 lety
-                            target_day_prev = d_last.timetuple().tm_yday 
-                            for d_prev, amt_prev in divs_prev_yr.items():
-                                diff = abs(d_prev.timetuple().tm_yday - target_day_prev)
-                                if diff < 45 and diff < min_diff_prev:
-                                    min_diff_prev = diff
-                                    closest_prev = amt_prev
-                            if closest_prev and (closest_last > closest_prev):
-                                past_ratio = closest_last / closest_prev
-                                growth_factor = (trend_ratio + past_ratio) / 2.0
-                            else:
+                        
+                        # --- Ochrana proti speciálním dividendám (MAIN, HTGC) ---
+                        # Pokud je skok větší než 25 %, pravděpodobně se srovnává běžná dividenda
+                        # se speciální. V takovém případě plošný růstový faktor konzervativně anulujeme (1.0).
+                        if trend_ratio > 1.25 or trend_ratio < 0.5:
+                            growth_factor = 1.0
+                        else:
+                            if trend_ratio < 1.0: 
                                 growth_factor = trend_ratio
+                            elif trend_ratio > 1.0:
+                                closest_prev = None
+                                min_diff_prev = 365
+                                # Odvození data před 2 lety
+                                target_day_prev = matched_d_last.timetuple().tm_yday 
+                                for d_prev, amt_prev in divs_prev_yr.items():
+                                    diff = abs(d_prev.timetuple().tm_yday - target_day_prev)
+                                    if diff < 45 and diff < min_diff_prev:
+                                        min_diff_prev = diff
+                                        closest_prev = amt_prev
+                                if closest_prev and (closest_last > closest_prev):
+                                    past_ratio = closest_last / closest_prev
+                                    growth_factor = (trend_ratio + past_ratio) / 2.0
+                                else:
+                                    growth_factor = trend_ratio
+                                    
+                            # Finální bezpečnostní pojistka: max 15% plošný meziroční růst
+                            growth_factor = min(growth_factor, 1.15)
 
                 # --- PROJEKCE DO ZBYTKU ROKU ---
                 calc_qty_held_proj = real_qty_held if mode == "real" else theoretical_qtys.get(t, 0)
@@ -2034,7 +2047,18 @@ class CzechInvestorApp:
                 if s_date.year != year_to_report: continue
                 
                 b_date = datetime.strptime(sale['buy_date'], "%Y-%m-%d")
-                exempt_by_time = (s_date - b_date).days > (3 * 365)
+                
+                # --- Přesný výpočet 3letého časového testu (ošetření přestupných let) ---
+                try:
+                    # Standardní posun přesně o 3 roky dopředu
+                    target_date = b_date.replace(year=b_date.year + 3)
+                except ValueError:
+                    # Fallback pro situaci, kdy nákup proběhl 29. února 
+                    # a rok o 3 roky později není přestupný.
+                    target_date = b_date.replace(year=b_date.year + 3, day=28)
+                
+                # Prodej je osvobozen, pokud proběhl striktně PO uplynutí 3 let (tedy nejdříve den poté)
+                exempt_by_time = s_date > target_date
                 
                 if exempt_by_time:
                     exempt_count += 1
