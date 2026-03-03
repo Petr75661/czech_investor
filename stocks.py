@@ -416,23 +416,52 @@ class CzechInvestorApp:
         self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
 
     def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=3):
-        """Robustní stahovač. Využívá parametry pro stabilizaci dotazu na Yahoo."""
+        """Robustní stahovač. Zajišťuje, že se stáhnou validní data pro VŠECHNY požadované tickery."""
         import time
+        
+        # Sjednocení vstupu (Yahoo Finance přijímá string oddělený mezerou nebo rovnou list)
+        if isinstance(tickers, str):
+            expected_tickers = tickers.split()
+        else:
+            expected_tickers = list(tickers)
+            
         for i in range(max_retries):
             try:
                 # Přidány parametry auto_adjust a actions pro vyšší stabilitu API
-                data = yf.download(tickers, period=period, interval=interval, 
+                data = yf.download(expected_tickers, period=period, interval=interval, 
                                    progress=False, auto_adjust=True, actions=False)
                 
-                if not data.empty and 'Close' in data:
-                    return data
+                # Základní kontrola
+                if data.empty or 'Close' not in data:
+                    raise ValueError("Yahoo Finance nevrátil žádná data nebo chybí sloupec 'Close'.")
+                
+                close_data = data['Close']
+                missing =[]
+                
+                # Hloubková kontrola, zda Yahoo tajně nevynechalo některou akcii (nebo nevrátilo jen NaN)
+                if isinstance(close_data, pd.DataFrame):
+                    for t in expected_tickers:
+                        if t not in close_data.columns or close_data[t].isna().all():
+                            missing.append(t)
+                else:
+                    # Pokud stahujeme jen jeden ticker, vrací se Series (jeden sloupec bez jména)
+                    if close_data.isna().all():
+                        missing = expected_tickers
+                        
+                if missing:
+                    raise ValueError(f"Chybí nebo jsou poškozená data pro: {', '.join(missing)}")
+                    
+                # Pokud kód dojde až sem, data jsou kompletní a v pořádku
+                return data
+                
             except Exception as e:
-                print(f"Pokus {i+1} o stažení {tickers} selhal... ({e})")
+                print(f"Pokus {i+1} o stažení selhal: {e}")
                 if i < max_retries - 1:
-                    time.sleep(1.0)
-        # Pokud vše selže, vracíme prázdnou tabulku (volající funkce se s tím musí poprat)
+                    time.sleep(1.0 + i)  # Progresivní pauza (1s, 2s...) před dalším pokusem
+                    
+        # Pokud vše selže, vracíme prázdnou tabulku (volající funkce to zachytí a zobrazí GUI hlášku)
         return pd.DataFrame()
-        
+
     # --------------------------------------------------------------------------
     # VIZUÁLNÍ OVERLAY A ANIMACE NAČÍTÁNÍ
     # --------------------------------------------------------------------------
@@ -1648,7 +1677,24 @@ class CzechInvestorApp:
         curve_new = norm_prices.dot(weights) * 100000
         
         self.ax_curve.plot(curve_base.index, curve_base.values, color='grey', linestyle='--', label='Aktuální (Base)')
-        self.ax_curve.plot(curve_new.index, curve_new.values, color='#1976D2', label='Nové (Tuned)')
+        self.ax_curve.plot(curve_new.index, curve_new.values, color='#1976D2', label='Nové (Hrubé)')
+        
+        # --- VÝPOČET ČISTÉHO RŮSTU PO ZDANĚNÍ DIVIDEND (Ztráta 15 %) ---
+        # 1. Zjistíme průměrný dividendový výnos celého namíchaného portfolia
+        port_div_yield = np.dot(weights, self.tuner_stock_divs)
+        
+        # 2. Roční "daňová brzda" (kolik procent z celkového majetku nám sebere daň)
+        tax_drag_annual = port_div_yield * 0.15 
+        
+        # 3. Výpočet přesného časového úseku v letech pro každý bod na křivce
+        years_from_start = (curve_new.index - curve_new.index[0]).days / 365.25
+        
+        # 4. Aplikace daňového odpočtu (odstraní složené úročení z té části, kterou spolkla daň)
+        tax_discount_factor = (1 - tax_drag_annual) ** years_from_start
+        curve_new_net = curve_new * tax_discount_factor
+        
+        # 5. Vykreslení tenké bleděmodré čáry
+        self.ax_curve.plot(curve_new_net.index, curve_new_net.values, color='#81D4FA', linestyle='-', linewidth=1.5, label='Nové (Čisté po zdanění)')
         
         if hasattr(self, 'tuner_spy_prices') and not self.tuner_spy_prices.empty:
             spy_aligned = self.tuner_spy_prices.reindex(norm_prices.index).ffill().bfill()
