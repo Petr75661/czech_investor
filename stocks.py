@@ -148,7 +148,7 @@ DEFAULT_STOCK_DB = {
 
 # Parametry pro Monte Carlo tuning portfolia
 MIN_W = 0.04
-MAX_W = 0.12
+MAX_W = 0.11
 EPS = 0.001
 ENFORCEMENT_W = 0.5  # Důraz na trefení čísla na slideru
 STABILITY_W = 0.5    # Důraz na minimální změnu existujících vah
@@ -260,7 +260,7 @@ class CzechInvestorApp:
         self.setup_tuner_tab()    
         self.setup_donation_tab()
 
-        self.root.after(2000, lambda: self.run_dash_with_loading(self.refresh_stats, "Načítám data z trhu..."))
+        self.root.after(2000, lambda: self.run_dash_with_loading(self.refresh_stats, "Stahuji data, prosím, čekejte..."))
 
     def on_close(self):
         self.root.destroy()
@@ -416,9 +416,11 @@ class CzechInvestorApp:
         self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
 
     def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=4):
-        """Robustní stahovač. Zajišťuje, že se stáhnou validní data pro VŠECHNY požadované tickery."""
+        """Robustní stahovač. Umožňuje paralelní běh, ale chrání před zkrácenými daty a výpadky Yahoo API."""
         import time
+        import random
         import numpy as np
+        import pandas as pd
         
         # Sjednocení vstupu (Yahoo Finance přijímá string oddělený mezerou nebo rovnou list)
         if isinstance(tickers, str):
@@ -428,7 +430,7 @@ class CzechInvestorApp:
             
         for i in range(max_retries):
             try:
-                # Přidány parametry auto_adjust a actions pro vyšší stabilitu API
+                # Paralelní stahování BEZ zámku (neblokuje ostatní záložky)
                 data = yf.download(expected_tickers, period=period, interval=interval, 
                                    progress=False, auto_adjust=True, actions=False)
                 
@@ -436,6 +438,11 @@ class CzechInvestorApp:
                 if data.empty or 'Close' not in data:
                     raise ValueError("Yahoo Finance nevrátil žádná data nebo chybí sloupec 'Close'.")
                 
+                # OCHRANA DÉLKY HISTORIE: Pokud chceme 5 let, musíme dostat cca 1000+ obchodních dnů
+                # (Zabrání to vykreslení zborcených grafů, pokud Yahoo přiškrtí data např. jen na 14 dnů)
+                if period == "5y" and len(data) < 1000:
+                    raise ValueError(f"Yahoo vrátil zkrácenou historii (jen {len(data)} dní místo 5 let).")
+                    
                 # Nahrazení nesmyslných nulových cen za NaN
                 close_data = data['Close'].replace(0.0, np.nan)
                 missing =[]
@@ -443,14 +450,13 @@ class CzechInvestorApp:
                 # Hloubková kontrola, zda Yahoo nevynechalo některou akcii
                 if isinstance(close_data, pd.DataFrame):
                     for t in expected_tickers:
-                        # dropna().empty zkontroluje, zda sloupec obsahuje alespoň jednu platnou hodnotu
                         if t not in close_data.columns or close_data[t].dropna().empty:
                             missing.append(t)
                 else:
-                    # Pokud se vrátil jen jeden sloupec (Series), zjistíme, které akcie chybí
+                    # Pokud se vrátil jen jeden sloupec (Series)
                     if len(expected_tickers) > 1:
                         succ_ticker = close_data.name if hasattr(close_data, 'name') else None
-                        missing = [t for t in expected_tickers if t != succ_ticker]
+                        missing =[t for t in expected_tickers if t != succ_ticker]
                         if close_data.dropna().empty:
                             missing = expected_tickers
                     else:
@@ -460,13 +466,15 @@ class CzechInvestorApp:
                 if missing:
                     raise ValueError(f"Chybí nebo jsou poškozená data pro: {', '.join(missing)}")
                     
-                # Pokud kód dojde až sem, data jsou kompletní a bez nul
+                # Pokud kód dojde až sem, data jsou kompletní a validní
                 return data
                 
             except Exception as e:
-                print(f"Pokus {i+1} o stažení selhal: {e}")
+                print(f"Pokus {i+1} o stažení selhal ({period}): {e}")
                 if i < max_retries - 1:
-                    time.sleep(1.0 + i)  # Progresivní pauza před dalším pokusem
+                    # JITTER: Přidání náhodné odchylky (0.5 až 1.5s), aby se vlákna při opakování nesešla
+                    jitter = random.uniform(0.5, 1.5)
+                    time.sleep(1.0 + i + jitter)
                     
         # Pokud vše selže (vyčerpán limit), vracíme prázdnou tabulku (volající funkce vyvolá Messagebox)
         return pd.DataFrame()
@@ -623,8 +631,9 @@ class CzechInvestorApp:
         self.cash_entry.pack(side=tk.LEFT, padx=5)
         self.cash_entry.insert(0, "70000")
         
-        tk.Button(top_bar, text="Spočítat návrh", command=lambda: threading.Thread(target=self.calculate_buys, daemon=True).start(), 
-                  bg="#2E7D32", fg="white", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=20)
+        self.btn_calc_buys = tk.Button(top_bar, text="Spočítat návrh", command=self.start_calculate_buys, 
+                  bg="#2E7D32", fg="white", font=("Arial", 12, "bold"))
+        self.btn_calc_buys.pack(side=tk.LEFT, padx=20)
                   
         tree_container = tk.Frame(calc_frame, bg="#f0f2f5")
         tree_container.pack(fill=tk.X, pady=5)
@@ -684,91 +693,141 @@ class CzechInvestorApp:
         
         self.staging_tree.bind("<Double-1>", self.delete_staging_row)
 
+        self.staging_tree.bind("<Double-1>", self.delete_staging_row)
+
         btn_bar = tk.Frame(final_frame, bg="#f0f2f5")
         btn_bar.pack(pady=10)
         tk.Button(btn_bar, text="💾 ULOŽIT VŠE DO PORTFOLIA", command=self.commit_staging_to_ledger, 
                   font=("Arial", 14, "bold"), bg="#C62828", fg="white", padx=20).pack()
+                  
+        # Přidání vizuálního loading elementu pro záložku Nákup (zůstává skrytý)
+        self.planner_loading_state = self._create_loading_card(main_frame)
+
+    def start_calculate_buys(self):
+        """Příprava před výpočtem - zamkne tlačítko a vyčistí tabulku v hlavním vlákně."""
+        self.btn_calc_buys.config(state=tk.DISABLED)
+        for i in self.buy_tree.get_children(): self.buy_tree.delete(i)
+        
+        # Nastavení časovače pro zobrazení animace ozubených kol (pokud to trvá déle než 2 vteřiny)
+        self.planner_loading_timer = self.root.after(2000, lambda: self.show_loading(self.planner_loading_state, "Stahuji data, prosím, čekejte..."))
+        
+        threading.Thread(target=self.calculate_buys, daemon=True).start()
 
     def calculate_buys(self):
-        try: invest = float(self.cash_entry.get().replace(',', '.'))
-        except ValueError:
-            messagebox.showerror("Chyba", "Zadejte platnou částku k investici.")
-            return
+        try:
+            try: 
+                invest = float(self.cash_entry.get().replace(',', '.'))
+            except ValueError:
+                self.root.after(0, lambda: messagebox.showerror("Chyba", "Zadejte platnou částku k investici."))
+                return
 
-        for i in self.buy_tree.get_children(): self.buy_tree.delete(i)
-        fx = self.get_fx_rates()
-        all_tickers = list(TARGETS.keys())
-        
-        try: 
-            raw_data = yf.download(all_tickers, period="5d", progress=False)['Close']
-            prices_data = raw_data.ffill().iloc[-1]
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Chyba stahování dat: {e}")
-            return
-
-        current_holdings_val = {}
-        total_current_portfolio_val = 0.0
-
-        for t in all_tickers:
-            qty_held = sum(item['qty'] for item in self.ledger.get(t,[]))
-            try:
-                price = float(prices_data[t])
-                cur = CURRENCIES.get(t, "USD")
-                fx_rate = fx.get(cur, 1.0)
-                if t.endswith(".L"): price /= 100.0
-                val_czk = qty_held * price * fx_rate
-                current_holdings_val[t] = val_czk
-                total_current_portfolio_val += val_czk
-            except Exception:
-                current_holdings_val[t] = 0
-
-        min_target = min(TARGETS.values())
-        low = 0.0
-        high = (total_current_portfolio_val + invest) / min_target 
-        virtual_total = 0.0
-        
-        for _ in range(50):
-            mid = (low + high) / 2.0
-            required_cash = 0.0
-            for t, target in TARGETS.items():
-                ideal_val = mid * target
-                curr_val = current_holdings_val.get(t, 0.0)
-                if ideal_val > curr_val:
-                    required_cash += (ideal_val - curr_val)
-                    
-            if required_cash > invest: high = mid
-            else: low = mid; virtual_total = mid
-
-        for t, target in TARGETS.items():
-            try:
-                cur = CURRENCIES.get(t, "USD")
-                price = float(prices_data[t])
-                fx_rate = fx.get(cur, 1.0)
-                if t.endswith(".L"): price /= 100.0
-                price_in_czk = price * fx_rate
-
-                ideal_val = virtual_total * target
-                curr_val = current_holdings_val.get(t, 0.0)
-                czk_alloc = max(0.0, ideal_val - curr_val)
-                qty = czk_alloc / price_in_czk if price_in_czk > 0 else 0.0
-
-                if qty < 0.001:
-                    qty = 0.0
-                    czk_alloc = 0.0
-
-                qty_rounded = round(qty, 3)
-                orig_val = qty_rounded * price
+            fx = self.get_fx_rates()
+            all_tickers = list(TARGETS.keys())
+            
+            try: 
+                # Použití robustního stahovače místo obyčejného yf.download pro větší stabilitu
+                raw_data = self._safe_yf_download(all_tickers, period="5d")
+                if raw_data.empty or 'Close' not in raw_data:
+                    raise ValueError("Nelze získat aktuální ceny akcií z Yahoo Finance.")
                 
-                self.buy_tree.insert("", "end", values=(
-                    t, 
-                    f"{target:.1%}".replace('.', ','), 
-                    f"{price:.2f}".replace('.', ','), 
-                    f"{fx_rate:.1f}".replace('.', ','), 
-                    f"{czk_alloc:.0f}",
-                    f"{orig_val:.2f}".replace('.', ','), 
-                    f"» {str(qty_rounded).replace('.', ',')} «"
-                ))
-            except Exception as e: print(f"Skipping {t}: {e}")
+                close_data = raw_data['Close']
+                if isinstance(close_data, pd.DataFrame):
+                    prices_data = close_data.ffill().iloc[-1]
+                else:
+                    prices_data = pd.Series({all_tickers[0]: close_data.ffill().iloc[-1]})
+            except Exception as e:
+                self.root.after(0, lambda err=e: messagebox.showerror("Chyba", f"Chyba stahování dat: {err}"))
+                return
+
+            current_holdings_val = {}
+            total_current_portfolio_val = 0.0
+
+            for t in all_tickers:
+                qty_held = sum(item['qty'] for item in self.ledger.get(t,[]))
+                try:
+                    price = float(prices_data[t])
+                    cur = CURRENCIES.get(t, "USD")
+                    fx_rate = fx.get(cur, 1.0)
+                    if t.endswith(".L"): price /= 100.0
+                    val_czk = qty_held * price * fx_rate
+                    current_holdings_val[t] = val_czk
+                    total_current_portfolio_val += val_czk
+                except Exception:
+                    current_holdings_val[t] = 0
+
+            # Ignorování nulových vah, abychom předešli dělení nulou
+            valid_targets =[w for w in TARGETS.values() if w > 0]
+            min_target = min(valid_targets) if valid_targets else 1.0
+            
+            low = 0.0
+            high = (total_current_portfolio_val + invest) / min_target 
+            virtual_total = 0.0
+            
+            for _ in range(50):
+                mid = (low + high) / 2.0
+                required_cash = 0.0
+                for t, target in TARGETS.items():
+                    ideal_val = mid * target
+                    curr_val = current_holdings_val.get(t, 0.0)
+                    if ideal_val > curr_val:
+                        required_cash += (ideal_val - curr_val)
+                        
+                if required_cash > invest: high = mid
+                else: low = mid; virtual_total = mid
+
+            rows_to_insert =[]
+            for t, target in TARGETS.items():
+                if target <= 0: continue
+                
+                try:
+                    cur = CURRENCIES.get(t, "USD")
+                    price = float(prices_data[t])
+                    fx_rate = fx.get(cur, 1.0)
+                    if t.endswith(".L"): price /= 100.0
+                    price_in_czk = price * fx_rate
+
+                    ideal_val = virtual_total * target
+                    curr_val = current_holdings_val.get(t, 0.0)
+                    czk_alloc = max(0.0, ideal_val - curr_val)
+                    qty = czk_alloc / price_in_czk if price_in_czk > 0 else 0.0
+
+                    if qty < 0.001:
+                        qty = 0.0
+                        czk_alloc = 0.0
+
+                    qty_rounded = round(qty, 3)
+                    orig_val = qty_rounded * price
+                    
+                    rows_to_insert.append((
+                        t, 
+                        f"{target:.1%}".replace('.', ','), 
+                        f"{price:.2f}".replace('.', ','), 
+                        f"{fx_rate:.1f}".replace('.', ','), 
+                        f"{czk_alloc:.0f}",
+                        f"{orig_val:.2f}".replace('.', ','), 
+                        f"» {str(qty_rounded).replace('.', ',')} «"
+                    ))
+                except Exception as e: print(f"Skipping {t}: {e}")
+
+            # Bezpečný zápis do UI z hlavního vlákna (bezpečné pro Tkinter)
+            self.root.after(0, lambda: self._populate_buy_tree(rows_to_insert))
+
+        finally:
+            # Garantované odemčení a skrytí loading animace (provedeno v hlavním vlákně)
+            self.root.after(0, self._cleanup_planner_loading)
+
+    def _cleanup_planner_loading(self):
+        """Bezpečně zruší časovač a skryje animaci po dokončení výpočtu."""
+        if getattr(self, 'planner_loading_timer', None):
+            self.root.after_cancel(self.planner_loading_timer)
+            self.planner_loading_timer = None
+        self.hide_loading(self.planner_loading_state)
+        self.btn_calc_buys.config(state=tk.NORMAL)
+
+    def _populate_buy_tree(self, rows):
+        """Pomocná metoda pro bezpečné vypsání dat do tabulky v UI vlákně."""
+        for row in rows:
+            self.buy_tree.insert("", "end", values=row)
 
     def fill_entry_from_proposal(self, event):
         """Přenese hodnoty z vybraného návrhu nákupu do formuláře."""
@@ -977,12 +1036,15 @@ class CzechInvestorApp:
         ctrl_panel.pack(fill=tk.X, padx=20, pady=10)
         
         self.div_mode_var = tk.StringVar(value="real")
-        tk.Radiobutton(ctrl_panel, text="Teoretické cílové portfolio (Dle nastavených vah)", variable=self.div_mode_var, value="target", bg="#E8F5E9", font=("Arial", 12)).pack(side=tk.LEFT, padx=10)
-        tk.Radiobutton(ctrl_panel, text="Reálné portfolio (Ledger)", variable=self.div_mode_var, value="real", bg="#E8F5E9", font=("Arial", 12)).pack(side=tk.LEFT, padx=10)
+        self.rb_div_target = tk.Radiobutton(ctrl_panel, text="Teoretické cílové portfolio (Dle nastavených vah)", variable=self.div_mode_var, value="target", bg="#E8F5E9", font=("Arial", 12))
+        self.rb_div_target.pack(side=tk.LEFT, padx=10)
+        self.rb_div_real = tk.Radiobutton(ctrl_panel, text="Reálné portfolio (Ledger)", variable=self.div_mode_var, value="real", bg="#E8F5E9", font=("Arial", 12))
+        self.rb_div_real.pack(side=tk.LEFT, padx=10)
         
-        tk.Button(ctrl_panel, text="📅 NAČÍST DATA", 
-                  command=lambda: threading.Thread(target=self.refresh_dividends, daemon=True).start(),
-                  font=("Arial", 12, "bold"), bg="#43A047", fg="white").pack(side=tk.LEFT, padx=15)
+        self.btn_refresh_divs = tk.Button(ctrl_panel, text="📅 NAČÍST DATA", 
+                  command=self.start_refresh_dividends,
+                  font=("Arial", 12, "bold"), bg="#43A047", fg="white")
+        self.btn_refresh_divs.pack(side=tk.LEFT, padx=15)
                   
         self.div_status_lbl = tk.Label(ctrl_panel, text="Klikni pro načtení...", bg="#E8F5E9", fg="grey", font=("Arial", 12))
         self.div_status_lbl.pack(side=tk.LEFT, padx=15)
@@ -1029,15 +1091,44 @@ class CzechInvestorApp:
         current_year = datetime.now().year
         self.div_total_lbl = tk.Label(frame, text=f"Celkem {current_year}: 0 Kč", font=("Arial", 14, "bold"), bg="#E8F5E9")
         self.div_total_lbl.pack(pady=10)
+        
+        # Vizuální loading element pro záložku Dividend
+        self.div_loading_state = self._create_loading_card(frame)
+
+    def start_refresh_dividends(self):
+        """Příprava před výpočtem dividend - zamkne ovládání a připraví UI."""
+        self.btn_refresh_divs.config(state=tk.DISABLED)
+        self.rb_div_target.config(state=tk.DISABLED)
+        self.rb_div_real.config(state=tk.DISABLED)
+        
+        for i in self.div_tree.get_children(): self.div_tree.delete(i)
+        self.div_status_lbl.config(text="Stahuji data o cenách a dividendách...", fg="blue")
+        
+        self.div_loading_timer = self.root.after(2000, lambda: self.show_loading(self.div_loading_state, "Stahuji data, prosím, čekejte..."))
+        threading.Thread(target=self.refresh_dividends, daemon=True).start()
+
+    def _cleanup_div_loading(self):
+        """Bezpečně zruší časovač a skryje animaci na záložce Dividend."""
+        if getattr(self, 'div_loading_timer', None):
+            self.root.after_cancel(self.div_loading_timer)
+            self.div_loading_timer = None
+        self.hide_loading(self.div_loading_state)
+        self.btn_refresh_divs.config(state=tk.NORMAL)
+        self.rb_div_target.config(state=tk.NORMAL)
+        self.rb_div_real.config(state=tk.NORMAL)
 
     def refresh_dividends(self):
+        try:
+            self._refresh_dividends_internal()
+        finally:
+            self.root.after(0, self._cleanup_div_loading)
+
+    def _refresh_dividends_internal(self):
         """
         Stáhne historii dividend od všech firem a vyprojektuje očekávaný výnos na zbytek roku.
         Zohledňuje burzovní pravidlo Ex-Dividend data (nákup musí být před tímto datem).
         """
         mode = self.div_mode_var.get()
-        self.div_status_lbl.config(text="Stahuji data o cenách a dividendách...", fg="blue")
-        for i in self.div_tree.get_children(): self.div_tree.delete(i)
         
         fx = self.get_fx_rates()
         
@@ -1048,10 +1139,17 @@ class CzechInvestorApp:
         all_tickers = list(all_tickers_set)
         
         try: 
-            prices_data = yf.download(all_tickers, period="5d", progress=False)['Close'].ffill().iloc[-1]
-            if isinstance(prices_data, pd.Series): prices_data = prices_data # Ochrana při jedné akcii
+            raw_data = self._safe_yf_download(all_tickers, period="5d")
+            if raw_data.empty or 'Close' not in raw_data:
+                raise ValueError("Nedostupná data.")
+                
+            close_data = raw_data['Close']
+            if isinstance(close_data, pd.DataFrame):
+                prices_data = close_data.ffill().iloc[-1]
+            else:
+                prices_data = pd.Series({all_tickers[0]: close_data.ffill().iloc[-1]})
         except Exception as e:
-            self.div_status_lbl.config(text="Chyba stahování aktuálních cen akcií.", fg="red")
+            self.root.after(0, lambda: self.div_status_lbl.config(text="Chyba stahování aktuálních cen akcií.", fg="red"))
             return
 
         total_value_czk = 0.0
@@ -1228,7 +1326,7 @@ class CzechInvestorApp:
 
         calendar_rows.sort(key=lambda x: x["date"])
         for row in calendar_rows:
-            self.div_tree.insert("", "end", values=row["values"])
+            self.root.after(0, lambda vals=row["values"]: self.div_tree.insert("", "end", values=vals))
             total_czk_gross += row["czk_gross"]
             total_czk_net += row["czk_net"]
 
@@ -1251,8 +1349,10 @@ class CzechInvestorApp:
         
         # Aktualizace popisku s výsledkem
         val_text = f"Hodnota portfolia pro výpočet: {sim_val:,.0f} Kč. ".replace(',', ' ') if mode == "target" else ""
-        self.div_total_lbl.config(text=f"{val_text}Celkem {current_year}: {total_czk_gross:,.0f} Kč (Čistého: {total_czk_net:,.0f} Kč)".replace(',', ' '))
-        self.div_status_lbl.config(text=f"Hotovo. Zahrnuta historie i projekce.", fg="green")
+        
+        # Bezpečný přepis UI
+        self.root.after(0, lambda: self.div_total_lbl.config(text=f"{val_text}Celkem {current_year}: {total_czk_gross:,.0f} Kč (Čistého: {total_czk_net:,.0f} Kč)".replace(',', ' ')))
+        self.root.after(0, lambda: self.div_status_lbl.config(text=f"Hotovo. Zahrnuta historie i projekce.", fg="green"))
 
     # --------------------------------------------------------------------------
     # TAB 4: TUNING PORTFOLIA A EDITOR AKCIÍ
@@ -1397,7 +1497,7 @@ class CzechInvestorApp:
             
             # Stahování a příprava historických metrik ---
             if force_download or not getattr(self, 'tuner_data_loaded', False):
-                self.root.after(0, lambda: self.tuner_loading_state["label"].config(text="Stahuji data z trhu..."))
+                self.root.after(0, lambda: self.tuner_loading_state["label"].config(text="Stahuji data, prosím, čekejte..."))
                 
                 fx = self.get_fx_rates() # Zkusí stáhnout, při chybě tiše použije fallback
                 all_to_download = tickers + ["SPY"]
@@ -2869,7 +2969,8 @@ class CzechInvestorApp:
         cnt = len(TARGETS)
         if cnt > 0:
             current_sum = sum(TARGETS.values())
-            if abs(current_sum - 1.0) > 0.01:
+            has_zero = any(w <= 0 for w in TARGETS.values())
+            if abs(current_sum - 1.0) > 0.01 or has_zero:
                 new_w = 1.0 / cnt
                 for t in TARGETS: TARGETS[t] = new_w
         
