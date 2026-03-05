@@ -422,7 +422,6 @@ class CzechInvestorApp:
         import numpy as np
         import pandas as pd
         
-        # Sjednocení vstupu (Yahoo Finance přijímá string oddělený mezerou nebo rovnou list)
         if isinstance(tickers, str):
             expected_tickers = tickers.split()
         else:
@@ -430,9 +429,10 @@ class CzechInvestorApp:
             
         for i in range(max_retries):
             try:
-                # Paralelní stahování BEZ zámku (neblokuje ostatní záložky)
+                # VYPÍNÁME vnitřní multithreading yfinance (threads=False). 
+                # Zabrání to poškození dat při souběžném dotazování z více záložek appky naráz.
                 data = yf.download(expected_tickers, period=period, interval=interval, 
-                                   progress=False, auto_adjust=True, actions=False)
+                                   progress=False, auto_adjust=True, actions=False, threads=False)
                 
                 # Základní kontrola
                 if data.empty or 'Close' not in data:
@@ -478,6 +478,43 @@ class CzechInvestorApp:
                     
         # Pokud vše selže (vyčerpán limit), vracíme prázdnou tabulku (volající funkce vyvolá Messagebox)
         return pd.DataFrame()
+
+    def _safe_get_dividends(self, ticker, max_retries=3):
+        """Inteligentní stahovač dividend s pamětí (Cache) a ochranou proti falešným prázdným datům."""
+        import time
+        import pandas as pd
+        if not hasattr(self, '_div_cache'):
+            self._div_cache = {}
+            
+        # Pokud už byly dividendy v této relaci staženy, vrať je okamžitě z paměti
+        if ticker in self._div_cache:
+            return self._div_cache[ticker]
+            
+        for i in range(max_retries):
+            try:
+                # Ochranná pauza před každým novým dotazem na Yahoo (minimalizuje riziko rate-limitu)
+                time.sleep(0.5)
+                
+                divs = yf.Ticker(ticker).dividends
+                
+                if divs is not None:
+                    # Yahoo občas při rate-limitu nehodí chybu, ale vrátí falešně prázdnou tabulku.
+                    # Pokud je prázdná a máme ještě pokusy, zkusíme to raději znovu.
+                    if divs.empty and i < max_retries - 1:
+                        time.sleep(1.0 + i)
+                        continue
+                        
+                    self._div_cache[ticker] = divs
+                    return divs
+            except Exception as e:
+                print(f"Chyba při stahování dividend pro {ticker}: {e}")
+                time.sleep(1.0 + i)
+                
+        # Při naprostém selhání (nebo pokud firma skutečně dividendy nikdy neplatila)
+        print(f"Upozornění: Dividendy pro {ticker} se nepodařilo získat (nebo jsou nulové).")
+        empty_series = pd.Series(dtype=float)
+        self._div_cache[ticker] = empty_series
+        return empty_series
 
     # --------------------------------------------------------------------------
     # VIZUÁLNÍ OVERLAY A ANIMACE NAČÍTÁNÍ
@@ -1205,8 +1242,7 @@ class CzechInvestorApp:
                 if calc_qty_held <= 0.001: continue
             
             try:
-                ticker_obj = yf.Ticker(t)
-                hist_divs = ticker_obj.dividends
+                hist_divs = self._safe_get_dividends(t)
                 
                 divs_current_yr = hist_divs[hist_divs.index.year == current_year]
                 divs_last_yr = hist_divs[hist_divs.index.year == last_year]
@@ -1540,8 +1576,7 @@ class CzechInvestorApp:
 
                     dy = 0.03
                     try:
-                        ticker_obj = yf.Ticker(t)
-                        hist_divs = ticker_obj.dividends
+                        hist_divs = self._safe_get_dividends(t)
                         divs_current = hist_divs[hist_divs.index.year == current_year]
                         divs_last = hist_divs[hist_divs.index.year == current_year - 1]
                         
@@ -2005,8 +2040,11 @@ class CzechInvestorApp:
                 self.ax1.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
 
                 years = sorted(list(set(hist_prices.index.year)))
-                growth_vals, div_vals, totals, colors, labels = [], [], [], [], []
+                growth_vals, div_vals, totals, colors, labels = [], [], [], [],[]
                 div_history = {t:[] for t in all_tickers}
+                
+                # Přednačtení dividend do paměti PŘED cyklem (ušetří desítky API dotazů a zrychlí appku)
+                all_divs = {t: self._safe_get_dividends(t) for t in all_tickers}
                 
                 for y in years:
                     y_start, y_end = f"{y}-01-01", f"{y}-12-31"
@@ -2030,7 +2068,8 @@ class CzechInvestorApp:
 
                         t_div = 0 
                         try:
-                            d_data = yf.Ticker(t).dividends.loc[y_start:y_end]
+                            # Využití bleskové Cache paměti místo dotazování sítě
+                            d_data = all_divs[t].loc[y_start:y_end]
                             for d_dt, amt in d_data.items():
                                 d_s = pd.Timestamp(d_dt.date())
                                 if not has_buys or y < first_buy_year:
