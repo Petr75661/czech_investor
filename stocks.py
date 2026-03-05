@@ -416,11 +416,12 @@ class CzechInvestorApp:
         self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
 
     def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=4):
-        """Robustní stahovač. Umožňuje paralelní běh, ale chrání před zkrácenými daty a výpadky Yahoo API."""
+        """Robustní stahovač s neviditelným kontrolním bodem (Spot-Check) pro ověření integrity dat."""
         import time
         import random
         import numpy as np
         import pandas as pd
+        from datetime import datetime, timedelta
         
         if isinstance(tickers, str):
             expected_tickers = tickers.split()
@@ -429,54 +430,78 @@ class CzechInvestorApp:
             
         for i in range(max_retries):
             try:
-                # VYPÍNÁME vnitřní multithreading yfinance (threads=False). 
-                # Zabrání to poškození dat při souběžném dotazování z více záložek appky naráz.
+                # 1. HLAVNÍ STAŽENÍ
                 data = yf.download(expected_tickers, period=period, interval=interval, 
                                    progress=False, auto_adjust=True, actions=False, threads=False)
                 
-                # Základní kontrola
                 if data.empty or 'Close' not in data:
-                    raise ValueError("Yahoo Finance nevrátil žádná data nebo chybí sloupec 'Close'.")
+                    raise ValueError("Yahoo Finance nevrátil žádná data.")
                 
-                # OCHRANA DÉLKY HISTORIE: Pokud chceme 5 let, musíme dostat cca 1000+ obchodních dnů
-                # (Zabrání to vykreslení zborcených grafů, pokud Yahoo přiškrtí data např. jen na 14 dnů)
-                if period == "5y" and len(data) < 1000:
-                    raise ValueError(f"Yahoo vrátil zkrácenou historii (jen {len(data)} dní místo 5 let).")
-                    
-                # Nahrazení nesmyslných nulových cen za NaN
+                # Základní očištění dat
                 close_data = data['Close'].replace(0.0, np.nan)
-                missing =[]
                 
-                # Hloubková kontrola, zda Yahoo nevynechalo některou akcii
+                # 2. KONTROLA INTEGRITY (SPOT-CHECK) - Pouze pro dlouhou historii
+                if period == "5y":
+                    if len(close_data) < 1000:
+                        raise ValueError("Vrácena příliš krátká historie.")
+
+                    # Vybereme si kontrolní bod (před 2 lety)
+                    check_dt = datetime.now() - timedelta(days=365 * 2)
+                    # Najdeme nejbližší existující datum v datech
+                    closest_idx = close_data.index.get_indexer([check_dt], method='nearest')[0]
+                    check_date_real = close_data.index[closest_idx]
+                    
+                    # Zjistíme, které akcie mají v hlavním balíku pro tento den NaN
+                    if isinstance(close_data, pd.DataFrame):
+                        suspicious_tickers = [t for t in expected_tickers if pd.isna(close_data.at[check_date_real, t])]
+                    else:
+                        suspicious_tickers = expected_tickers if pd.isna(close_data.iloc[closest_idx]) else []
+
+                    # 3. NEVIDITELNÉ OVĚŘENÍ (Pokud máme podezření na chybějící data)
+                    if suspicious_tickers:
+                        # Zkusíme stáhnout malý vzorek (1 týden) kolem kontrolního bodu
+                        start_c = (check_date_real - timedelta(days=3)).strftime('%Y-%m-%d')
+                        end_c = (check_date_real + timedelta(days=4)).strftime('%Y-%m-%d')
+                        
+                        # Bleskový dotaz na pozadí
+                        check_data = yf.download(suspicious_tickers, start=start_c, end=end_c, 
+                                                 progress=False, auto_adjust=True, actions=False, threads=False)
+                        
+                        if not check_data.empty and 'Close' in check_data:
+                            # Pokud kontrolní dotaz data našel, ale hlavní balík ne -> Main balík je vadný
+                            found_in_check = []
+                            c_close = check_data['Close']
+                            for t in suspicious_tickers:
+                                if isinstance(c_close, pd.DataFrame):
+                                    if t in c_close.columns and not c_close[t].dropna().empty:
+                                        found_in_check.append(t)
+                                elif not c_close.dropna().empty:
+                                    found_in_check.append(t)
+                            
+                            if found_in_check:
+                                raise ValueError(f"Tichá chyba: Balík postrádá data pro {found_in_check}, ačkoliv na serveru existují.")
+
+                # 4. FINÁLNÍ KONTROLA SLOUPCŮ
+                missing = []
                 if isinstance(close_data, pd.DataFrame):
                     for t in expected_tickers:
                         if t not in close_data.columns or close_data[t].dropna().empty:
                             missing.append(t)
-                else:
-                    # Pokud se vrátil jen jeden sloupec (Series)
-                    if len(expected_tickers) > 1:
-                        succ_ticker = close_data.name if hasattr(close_data, 'name') else None
-                        missing =[t for t in expected_tickers if t != succ_ticker]
-                        if close_data.dropna().empty:
-                            missing = expected_tickers
-                    else:
-                        if close_data.dropna().empty:
-                            missing = expected_tickers
-                            
+                elif close_data.dropna().empty:
+                    missing = expected_tickers
+
                 if missing:
-                    raise ValueError(f"Chybí nebo jsou poškozená data pro: {', '.join(missing)}")
+                    raise ValueError(f"Chybí data pro: {', '.join(missing)}")
                     
-                # Pokud kód dojde až sem, data jsou kompletní a validní
+                # Vše v pořádku
                 return data
                 
             except Exception as e:
                 print(f"Pokus {i+1} o stažení selhal ({period}): {e}")
                 if i < max_retries - 1:
-                    # JITTER: Přidání náhodné odchylky (0.5 až 1.5s), aby se vlákna při opakování nesešla
-                    jitter = random.uniform(0.5, 1.5)
-                    time.sleep(1.0 + i + jitter)
+                    jitter = random.uniform(0.5, 2.0)
+                    time.sleep(1.5 + i + jitter)
                     
-        # Pokud vše selže (vyčerpán limit), vracíme prázdnou tabulku (volající funkce vyvolá Messagebox)
         return pd.DataFrame()
 
     def _safe_get_dividends(self, ticker, max_retries=3):
