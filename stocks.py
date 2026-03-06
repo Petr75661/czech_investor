@@ -148,11 +148,12 @@ DEFAULT_STOCK_DB = {
 
 # Parametry pro Monte Carlo tuning portfolia
 MIN_W = 0.04
-MAX_W = 0.11
+MAX_W = 0.10
 EPS = 0.001
 ENFORCEMENT_W = 0.5  # Důraz na trefení čísla na slideru
 STABILITY_W = 0.5    # Důraz na minimální změnu existujících vah
 MC_NO = 200000       # Počet simulovaných portfolií (musí být větší než 20000)
+MC_NO_IMPR = 200000  # Počet simulovaných portfolií při vylepšování
 MAX_DIV_SHARE = 0.23 # Maximální tolerovaný podíl jedné akcii v celkovém úhrnu dividend
 
 
@@ -416,7 +417,7 @@ class CzechInvestorApp:
         self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
 
     def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=4):
-        """Robustní stahovač s neviditelným kontrolním bodem (Spot-Check) pro ověření integrity dat."""
+        """Robustní stahovač s ochranou proti vnitřním chybám yfinance (NoneType error)."""
         import time
         import random
         import numpy as np
@@ -434,73 +435,72 @@ class CzechInvestorApp:
                 data = yf.download(expected_tickers, period=period, interval=interval, 
                                    progress=False, auto_adjust=True, actions=False, threads=False)
                 
-                if data.empty or 'Close' not in data:
-                    raise ValueError("Yahoo Finance nevrátil žádná data.")
+                # Ochrana proti vnitřní chybě yfinance, kdy download vrátí None nebo prázdno
+                if data is None or data.empty or 'Close' not in data:
+                    raise ValueError("Yahoo Finance nevrátil validní data.")
                 
-                # Základní očištění dat
                 close_data = data['Close'].replace(0.0, np.nan)
                 
-                # 2. KONTROLA INTEGRITY (SPOT-CHECK) - Pouze pro dlouhou historii
+                # 2. KONTROLA INTEGRITY (SPOT-CHECK)
                 if period == "5y":
                     if len(close_data) < 1000:
-                        raise ValueError("Vrácena příliš krátká historie.")
+                        raise ValueError("Vrácena nekompletní historie.")
 
-                    # Vybereme si kontrolní bod (před 2 lety)
                     check_dt = datetime.now() - timedelta(days=365 * 2)
-                    # Najdeme nejbližší existující datum v datech
                     closest_idx = close_data.index.get_indexer([check_dt], method='nearest')[0]
                     check_date_real = close_data.index[closest_idx]
                     
-                    # Zjistíme, které akcie mají v hlavním balíku pro tento den NaN
                     if isinstance(close_data, pd.DataFrame):
                         suspicious_tickers = [t for t in expected_tickers if pd.isna(close_data.at[check_date_real, t])]
                     else:
                         suspicious_tickers = expected_tickers if pd.isna(close_data.iloc[closest_idx]) else []
 
-                    # 3. NEVIDITELNÉ OVĚŘENÍ (Pokud máme podezření na chybějící data)
                     if suspicious_tickers:
-                        # Zkusíme stáhnout malý vzorek (1 týden) kolem kontrolního bodu
-                        start_c = (check_date_real - timedelta(days=3)).strftime('%Y-%m-%d')
-                        end_c = (check_date_real + timedelta(days=4)).strftime('%Y-%m-%d')
+                        # Ignorujeme měnové páry v kontrolním bodu, jsou náchylné na krátkodobé výpadky
+                        # Akcie jsou prioritou pro kontrolu integrity
+                        stocks_only = [t for t in suspicious_tickers if "=" not in t]
                         
-                        # Bleskový dotaz na pozadí
-                        check_data = yf.download(suspicious_tickers, start=start_c, end=end_c, 
-                                                 progress=False, auto_adjust=True, actions=False, threads=False)
-                        
-                        if not check_data.empty and 'Close' in check_data:
-                            # Pokud kontrolní dotaz data našel, ale hlavní balík ne -> Main balík je vadný
-                            found_in_check = []
-                            c_close = check_data['Close']
-                            for t in suspicious_tickers:
-                                if isinstance(c_close, pd.DataFrame):
-                                    if t in c_close.columns and not c_close[t].dropna().empty:
-                                        found_in_check.append(t)
-                                elif not c_close.dropna().empty:
-                                    found_in_check.append(t)
+                        if stocks_only:
+                            start_c = (check_date_real - timedelta(days=5)).strftime('%Y-%m-%d')
+                            end_c = (check_date_real + timedelta(days=5)).strftime('%Y-%m-%d')
                             
-                            if found_in_check:
-                                raise ValueError(f"Tichá chyba: Balík postrádá data pro {found_in_check}, ačkoliv na serveru existují.")
+                            check_data = yf.download(stocks_only, start=start_c, end=end_c, 
+                                                     progress=False, auto_adjust=True, actions=False, threads=False)
+                            
+                            if check_data is not None and not check_data.empty and 'Close' in check_data:
+                                c_close = check_data['Close']
+                                found_in_check = []
+                                for t in stocks_only:
+                                    if isinstance(c_close, pd.DataFrame):
+                                        if t in c_close.columns and not c_close[t].dropna().empty:
+                                            found_in_check.append(t)
+                                    elif not c_close.dropna().empty:
+                                        found_in_check.append(t)
+                                
+                                if found_in_check:
+                                    raise ValueError(f"Data pro {found_in_check} v balíku chybí, ale na serveru jsou.")
 
-                # 4. FINÁLNÍ KONTROLA SLOUPCŮ
+                # 3. FINÁLNÍ VERIFIKACE
                 missing = []
                 if isinstance(close_data, pd.DataFrame):
                     for t in expected_tickers:
+                        # Měnové páry (FX) mohou mít v historii mezery (svátky), u nich jsme benevolentnější
+                        if "=" in t: continue 
                         if t not in close_data.columns or close_data[t].dropna().empty:
                             missing.append(t)
                 elif close_data.dropna().empty:
                     missing = expected_tickers
 
                 if missing:
-                    raise ValueError(f"Chybí data pro: {', '.join(missing)}")
+                    raise ValueError(f"Totální výpadek dat pro: {', '.join(missing)}")
                     
-                # Vše v pořádku
                 return data
                 
             except Exception as e:
-                print(f"Pokus {i+1} o stažení selhal ({period}): {e}")
+                # Zde se zachytí i ten TypeError z vnitřku yfinance
+                print(f"Pokus {i+1} selhal: {e}")
                 if i < max_retries - 1:
-                    jitter = random.uniform(0.5, 2.0)
-                    time.sleep(1.5 + i + jitter)
+                    time.sleep(2.0 + i + random.uniform(0, 1))
                     
         return pd.DataFrame()
 
@@ -625,6 +625,8 @@ class CzechInvestorApp:
             self.btn_change_stocks.config(state=state)
         if hasattr(self, 'btn_init_tuner') and self.btn_init_tuner.winfo_exists():
             self.btn_init_tuner.config(state=state)
+        if hasattr(self, 'btn_auto_tune') and self.btn_auto_tune.winfo_exists():
+            self.btn_auto_tune.config(state=state)
         if hasattr(self, 'btn_apply_weights') and self.btn_apply_weights.winfo_exists():
             self.btn_apply_weights.config(state=state)
         if hasattr(self, 'tuner_checkboxes'):
@@ -1442,9 +1444,39 @@ class CzechInvestorApp:
         self.btn_change_stocks = tk.Button(title_frame, text="⚙️ Změnit akcie", command=self.open_portfolio_editor, font=("Arial", 12), bg="#DDD")
         self.btn_change_stocks.pack(side=tk.RIGHT)
         
-        tk.Label(control_panel, text="Které akcie chcete tunit? (nezaškrtlé = fixováno):", bg="#FFF8E1", font=("Arial", 12, "bold")).pack(anchor="w", pady=(0,5))
-        cb_frame = tk.Frame(control_panel, bg="#FFF8E1")
-        cb_frame.pack(anchor="w", fill=tk.X, pady=(0,10))
+        # Zabalení do ohraničeného rámečku s popiskem
+        cb_container = tk.LabelFrame(control_panel, text="Které akcie chcete tunit? (nezaškrtlé = fixováno)", bg="#FFF8E1", font=("Arial", 11, "bold"))
+        cb_container.pack(fill=tk.X, pady=(0, 10))
+        
+        # Vytvoření Canvasu a Scrollbaru pro scrollovatelný obsah
+        # Výška 146 px ukáže zhruba 5 řádků akcií (15 titulů). Při více titulech se objeví posuvník.
+        self.cb_canvas = tk.Canvas(cb_container, bg="#FFF8E1", highlightthickness=0, height=146)
+        self.cb_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        cb_scrollbar = ttk.Scrollbar(cb_container, orient="vertical", command=self.cb_canvas.yview)
+        cb_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.cb_canvas.configure(yscrollcommand=cb_scrollbar.set)
+        
+        # Samotný frame, ve kterém budou checkboxy, umístěný uvnitř Canvasu
+        cb_frame = tk.Frame(self.cb_canvas, bg="#FFF8E1")
+        self.cb_canvas_window = self.cb_canvas.create_window((0, 0), window=cb_frame, anchor="nw")
+        
+        # Automatické přizpůsobení scrollovací oblasti a šířky
+        def on_cb_frame_configure(event):
+            self.cb_canvas.configure(scrollregion=self.cb_canvas.bbox("all"))
+            
+        def on_cb_canvas_configure(event):
+            self.cb_canvas.itemconfig(self.cb_canvas_window, width=event.width)
+            
+        cb_frame.bind("<Configure>", on_cb_frame_configure)
+        self.cb_canvas.bind("<Configure>", on_cb_canvas_configure)
+        
+        # Podpora pro scrollování kolečkem myši (aktivní pouze při najetí na Canvas)
+        def _on_mousewheel(event):
+            self.cb_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            
+        self.cb_canvas.bind("<Enter>", lambda e: self.cb_canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        self.cb_canvas.bind("<Leave>", lambda e: self.cb_canvas.unbind_all("<MouseWheel>"))
         
         self.tuner_vars = {}
         self.tuner_checkboxes =[] # Uložení referencí na checkboxy
@@ -1456,10 +1488,18 @@ class CzechInvestorApp:
             cb.grid(row=i//3, column=i%3, sticky="w", padx=2)
             self.tuner_checkboxes.append(cb)
             
-        self.btn_init_tuner = tk.Button(control_panel, text="⚡ NAČÍST DATA & SIMULOVAT", 
+        btn_frame = tk.Frame(control_panel, bg="#FFF8E1")
+        btn_frame.pack(fill=tk.X, pady=5)
+        
+        self.btn_init_tuner = tk.Button(btn_frame, text="⚡ NAČÍST & SIMULOVAT", 
                                         command=lambda: self.run_tuner_with_loading(lambda: self.initialize_tuner_data(force_download=True), "Stahuji data a simuluji..."),
-                                        bg="#F57F17", fg="white", font=("Arial", 12, "bold"))
-        self.btn_init_tuner.pack(fill=tk.X, pady=5)
+                                        bg="#F57F17", fg="white", font=("Arial", 11, "bold"))
+        self.btn_init_tuner.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 2))
+
+        self.btn_auto_tune = tk.Button(btn_frame, text="✨ VYLEPŠIT", 
+                                        command=lambda: self.run_tuner_with_loading(lambda: self.initialize_tuner_data(force_download=False, n_sims=MC_NO_IMPR, auto_improve=True), "Hledám lepší váhy..."),
+                                        bg="#0288D1", fg="white", font=("Arial", 11, "bold"))
+        self.btn_auto_tune.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(2, 0))
         
         self.tuner_status = tk.Label(control_panel, text="Data nenačtena", bg="#FFF8E1", fg="grey", font=("Arial", 12), wraplength=350)
         self.tuner_status.pack(pady=5)
@@ -1551,8 +1591,10 @@ class CzechInvestorApp:
         for s in self.sliders.values(): s.config(state="disabled")
         self.run_tuner_with_loading(lambda: self.initialize_tuner_data(force_download=False), "Přepočítávám simulace...")
 
-    def initialize_tuner_data(self, force_download=True):
+    def initialize_tuner_data(self, force_download=True, n_sims=None, auto_improve=False):
         import time 
+        if n_sims is None:
+            n_sims = MC_NO
         try:
             tickers = list(TARGETS.keys())
             
@@ -1628,9 +1670,8 @@ class CzechInvestorApp:
                 self.tuner_data_loaded = True
             
             n_cores = multiprocessing.cpu_count()
-            self.root.after(0, lambda: self.tuner_loading_state["label"].config(text=f"Generuji {MC_NO} scénářů ({n_cores} jader)..."))
+            self.root.after(0, lambda: self.tuner_loading_state["label"].config(text=f"Generuji {n_sims} scénářů ({n_cores} jader)..."))
             
-            n_sims = MC_NO
             n_assets = len(self.ordered_tickers)
             
             valid_vars = {t: var for t, var in self.tuner_vars.items() if t in self.ordered_tickers}
@@ -1697,30 +1738,87 @@ class CzechInvestorApp:
             chunk_size = n_sims // n_cores
             period_returns_vals = self.tuner_period_returns.values 
             
-            tasks =[]
-            for _ in range(n_cores):
-                tasks.append((chunk_size, active_indices, fixed_weights, target_sum, 
-                                adj_min_w, adj_max_w, EPS, self.tuner_stock_divs, self.tuner_stock_growths, period_returns_vals))
-            
-            with multiprocessing.Pool(processes=n_cores) as pool:
-                chunk_results = pool.starmap(_worker_simulation_task, tasks)
-            
-            w_chunks =[wc for wc, mc in chunk_results if len(wc) > 0]
-            m_chunks =[mc for wc, mc in chunk_results if len(mc) > 0]
-            
-            if w_chunks:
-                self.sim_weights = np.vstack(w_chunks)
-                self.sim_metrics = np.vstack(m_chunks)
+            # Inicializace hodnot pro auto-vylepšení (pokud je aktivní)
+            if auto_improve and getattr(self, 'sim_metrics', None) is not None and getattr(self, 'current_sim_idx', None) is not None:
+                # Používáme přesné floaty z databáze, nikoliv zaokrouhlené hodnoty ze sliderů!
+                best_m = self.sim_metrics[self.current_sim_idx].copy()
+                best_w = self.sim_weights[self.current_sim_idx].copy()
             else:
-                self.root.after(0, lambda: messagebox.showerror("Chyba", "Simulace nenašla platná řešení."))
-                return
+                auto_improve = False
+                
+            iteration = 1
+            
+            while True:
+                if auto_improve:
+                    msg = f"Hledám lepší váhy (Iterace {iteration})..."
+                else:
+                    msg = f"Generuji {n_sims} scénářů ({n_cores} jader)..."
+                
+                # Aktualizace textu na UI (bezpečně z hlavního vlákna)
+                self.root.after(0, lambda m=msg: self.tuner_loading_state["label"].config(text=m))
+                
+                tasks =[]
+                for _ in range(n_cores):
+                    tasks.append((chunk_size, active_indices, fixed_weights, target_sum, 
+                                    adj_min_w, adj_max_w, EPS, self.tuner_stock_divs, self.tuner_stock_growths, period_returns_vals))
+                
+                with multiprocessing.Pool(processes=n_cores) as pool:
+                    chunk_results = pool.starmap(_worker_simulation_task, tasks)
+                    
+                w_chunks =[wc for wc, mc in chunk_results if len(wc) > 0]
+                m_chunks =[mc for wc, mc in chunk_results if len(mc) > 0]
+                
+                if not w_chunks:
+                    if iteration == 1:
+                        self.root.after(0, lambda: messagebox.showerror("Chyba", "Simulace nenašla platná řešení."))
+                        return
+                    else:
+                        break # Pokud selže v pozdější iteraci, cyklus prostě skončí
+                        
+                new_w = np.vstack(w_chunks)
+                new_m = np.vstack(m_chunks)
+                
+                if auto_improve:
+                    # 1. Žádná metrika nesmí být horší (přidána mikroskopická tolerance na nepřesnost Floatů)
+                    eps = 1e-5
+                    mask = (new_m[:,0] >= best_m[0] - eps) & (new_m[:,1] >= best_m[1] - eps) & (new_m[:,2] >= best_m[2] - eps)
+                    
+                    # 2. Alespoň jedna metrika musí být prokazatelně lepší 
+                    # (Dividenda o 1 Kč, nebo Drawdown o 0.01 %, nebo Růst o 0.01 %)
+                    strict_mask = (new_m[:,0] >= best_m[0] + 1.0) | (new_m[:,1] >= best_m[1] + 0.01) | (new_m[:,2] >= best_m[2] + 0.01)
+                    
+                    valid_indices = np.where(mask & strict_mask)[0]
+                    
+                    if len(valid_indices) > 0:
+                        # Vybereme tu kombinaci, která maximalizuje součet zlepšení napříč metrikami
+                        rngs = np.ptp(new_m, axis=0)
+                        rngs[rngs == 0] = 1.0
+                        diffs = new_m[valid_indices] - best_m
+                        norm_diffs = diffs / rngs
+                        scores = np.sum(norm_diffs, axis=1)
+                        best_local_idx = valid_indices[np.argmax(scores)]
+                        
+                        # Uložíme si nového "šampiona" a spustíme další iteraci
+                        best_w = new_w[best_local_idx].copy()
+                        best_m = new_m[best_local_idx].copy()
+                        iteration += 1
+                        continue
+                    else:
+                        # V této iteraci už jsme nenašli nic prokazatelně lepšího. Zastavujeme se na vrcholu.
+                        self.sim_weights = np.vstack([best_w, new_w])
+                        self.sim_metrics = np.vstack([best_m, new_m])
+                        best_idx = 0
+                        break
+                else:
+                    self.sim_weights = new_w
+                    self.sim_metrics = new_m
+                    dists = np.linalg.norm(self.sim_weights - current_w, axis=1)
+                    best_idx = np.argmin(dists)
+                    break
 
             min_div, max_div = np.min(self.sim_metrics[:,0]), np.max(self.sim_metrics[:,0])
             min_dd, max_dd = np.min(self.sim_metrics[:,1]), np.max(self.sim_metrics[:,1])
             min_gr, max_gr = np.min(self.sim_metrics[:,2]), np.max(self.sim_metrics[:,2])
-            
-            dists = np.linalg.norm(self.sim_weights - current_w, axis=1)
-            best_idx = np.argmin(dists)
             
             self.root.after(0, lambda: self._setup_sliders_after_load(min_div, max_div, min_dd, max_dd, min_gr, max_gr, best_idx))
             
@@ -1735,7 +1833,7 @@ class CzechInvestorApp:
         
         self.current_sim_idx = best_idx
         self.update_sliders_visuals(from_user_interaction=False)
-        self.tuner_status.config(text="Připraveno. Upravte slidery k nalezení ideálních vah.", fg="green")
+        self.tuner_status.config(text="Upravte slidery k nalezení ideálních vah.", fg="green")
 
     def on_slider_change(self, source_key, value):
         if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
