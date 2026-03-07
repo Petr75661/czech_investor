@@ -156,6 +156,7 @@ MC_NO = 200000       # Počet simulovaných portfolií (musí být větší než
 MC_NO_IMPR = 200000  # Počet simulovaných portfolií při vylepšování
 MAX_DIV_SHARE = 0.23 # Maximální tolerovaný podíl jedné akcii v celkovém úhrnu dividend
 DIV_YIELD_DROP = 0.5 # Očekávaný poměr změny dividend u akcií, které vyplácejí více než 90% zisku
+DIV_WARN_FRACTION = 0.03 # Od jakého podílu jednoho zdroje dividend se zobrazí varování
 
 # ==============================================================================
 # 2. JÁDRO PRO MULTIPROCESSING (MONTE CARLO)
@@ -2099,6 +2100,13 @@ class CzechInvestorApp:
             self.wedges_divs, _, _ = self.ax_div_pie.pie(div_sizes, labels=f_labels, autopct=lambda p: f'{p:.1f}%'.replace('.', ',') if p > 3 else '', startangle=140, colors=plt.cm.tab20b.colors)
             self.div_data_tickers = div_tickers; self.div_data_sizes = div_sizes
             self.ax_div_pie.set_title(f"Zdroje dividend {pie_title_suffix}")
+            
+            # --- VAROVÁNÍ NA KONCENTRACI ---
+            if len(div_sizes) > 0:
+                max_share = div_sizes[0] / total_div
+                if max_share > MAX_DIV_SHARE:
+                    self.ax_div_pie.text(0, -1.35, f"⚠️ Varování: Akcie {div_tickers[0]} generuje {max_share*100:.1f} % dividend".replace('.', ','), 
+                                         ha='center', color='#E65100', fontsize=11, fontweight='bold')
         
         # --- HLAVNÍ GRAF: HISTORIE + PREDIKCE ---
         norm_prices = self.tuner_hist_prices / self.tuner_hist_prices.iloc[0]
