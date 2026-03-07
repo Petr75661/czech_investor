@@ -155,14 +155,15 @@ STABILITY_W = 0.5    # Důraz na minimální změnu existujících vah
 MC_NO = 200000       # Počet simulovaných portfolií (musí být větší než 20000)
 MC_NO_IMPR = 200000  # Počet simulovaných portfolií při vylepšování
 MAX_DIV_SHARE = 0.23 # Maximální tolerovaný podíl jedné akcii v celkovém úhrnu dividend
-
+DIV_YIELD_DROP = 0.5 # Očekávaný poměr změny dividend u akcií, které vyplácejí více než 90% zisku
 
 # ==============================================================================
 # 2. JÁDRO PRO MULTIPROCESSING (MONTE CARLO)
 # ==============================================================================
 
 def _worker_simulation_task(n_sims, active_indices, fixed_weights, target_sum, 
-                            min_w, max_w, eps, stock_divs, stock_growths, sim_returns_values):
+                            min_w, max_w, eps, stock_divs, stock_growths, sim_returns_values,
+                            safe_divs, upsides, cov_matrix):
     """
     Paralelizovaná funkce pro Monte Carlo simulaci portfolií.
     Využívá Rejection Sampling k vygenerování validních vah a numpy matice k rychlému
@@ -212,7 +213,19 @@ def _worker_simulation_task(n_sims, active_indices, fixed_weights, target_sum,
     drawdowns = (cum_returns - running_max) / running_max
     max_dds = np.min(drawdowns, axis=0) * 100 
     
-    metrics_chunk = np.column_stack((div_income_czk, max_dds, port_growths))
+    # --- VÝPOČET PŘEDPOVĚDÍ DO BUDOUCNA ---
+    fut_div_czk = np.dot(weights_chunk, safe_divs) * 100000
+    fut_growths = np.dot(weights_chunk, upsides) # Desetinné číslo
+    
+    # Rychlý výpočet Volatility celého batche portfolií naráz
+    batch_var = np.sum((weights_chunk @ cov_matrix) * weights_chunk, axis=1)
+    batch_vol = np.sqrt(batch_var)
+    
+    # Výpočet 95% krizového propadu (Očekávaný růst mínus 1.645 * Volatilita)
+    fut_crisis_drop = (fut_growths - 1.645 * batch_vol) * 100
+    fut_crisis_drop = np.minimum(fut_crisis_drop, 0.0) # Zarovnáme na nulu, propad nesmí být kladný
+    
+    metrics_chunk = np.column_stack((div_income_czk, max_dds, port_growths, fut_div_czk, fut_crisis_drop, fut_growths * 100))
     return weights_chunk, metrics_chunk
 
 
@@ -540,6 +553,36 @@ class CzechInvestorApp:
         empty_series = pd.Series(dtype=float)
         self._div_cache[ticker] = empty_series
         return empty_series
+
+    def _safe_get_fundamentals(self, ticker, max_retries=3):
+        """Stahuje fundamentální data pro budoucí predikci (P/E, Výplatní poměr, Cílové ceny analytiků)."""
+        import time
+        if not hasattr(self, '_fund_cache'):
+            self._fund_cache = {}
+            
+        if ticker in self._fund_cache:
+            return self._fund_cache[ticker]
+            
+        for i in range(max_retries):
+            try:
+                time.sleep(0.5)
+                info = yf.Ticker(ticker).info
+                if info:
+                    data = {
+                        "pe_ratio": info.get('forwardPE') or info.get('trailingPE') or 15.0,
+                        "payout_ratio": info.get('payoutRatio') or 0.0,
+                        "target_price": info.get('targetMeanPrice'),
+                        "current_price": info.get('currentPrice') or info.get('previousClose')
+                    }
+                    self._fund_cache[ticker] = data
+                    return data
+            except Exception:
+                time.sleep(1.0 + i)
+                
+        # Při selhání nebo u ETF vrátíme bezpečné neutrální hodnoty
+        data = {"pe_ratio": 15.0, "payout_ratio": 0.0, "target_price": None, "current_price": None}
+        self._fund_cache[ticker] = data
+        return data
 
     # --------------------------------------------------------------------------
     # VIZUÁLNÍ OVERLAY A ANIMACE NAČÍTÁNÍ
@@ -1432,7 +1475,7 @@ class CzechInvestorApp:
         else:
             self.notebook.insert(index, self.tuner_frame, text="Tuning Portfolia")
         
-        control_panel = tk.Frame(self.tuner_frame, bg="#FFF8E1", width=420, padx=15, pady=15)
+        control_panel = tk.Frame(self.tuner_frame, bg="#FFF8E1", width=550, padx=15, pady=15)
         control_panel.pack(side=tk.LEFT, fill=tk.Y)
         
         title_frame = tk.Frame(control_panel, bg="#FFF8E1")
@@ -1504,57 +1547,106 @@ class CzechInvestorApp:
         self.tuner_status = tk.Label(control_panel, text="Data nenačtena", bg="#FFF8E1", fg="grey", font=("Arial", 12), wraplength=350)
         self.tuner_status.pack(pady=5)
         
-        self.sliders = {}
-        tk.Label(control_panel, text="Hrubá Roční Dividenda (na 100k Kč):", bg="#FFF8E1", font=("Arial", 12, "bold")).pack(anchor="w", pady=(10,0))
-        self.lbl_div_val = tk.Label(control_panel, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
-        self.lbl_div_val.pack(anchor="w")
-        self.sliders['div'] = tk.Scale(control_panel, orient=tk.HORIZONTAL, length=320, bg="#FFF8E1", resolution=10, showvalue=False, command=lambda v: self.on_slider_change('div', v))
-        self.sliders['div'].pack()
+        slider_frame = tk.Frame(control_panel, bg="#FFF8E1")
+        slider_frame.pack(fill=tk.X, pady=(5, 0))
         
-        tk.Label(control_panel, text="Max Roční Pokles v % (z 5 let):", bg="#FFF8E1", font=("Arial", 12, "bold")).pack(anchor="w", pady=(10,0))
-        self.lbl_dd_val = tk.Label(control_panel, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
-        self.lbl_dd_val.pack(anchor="w")
-        self.sliders['dd'] = tk.Scale(control_panel, orient=tk.HORIZONTAL, length=320, bg="#FFF8E1", resolution=0.1, showvalue=False, command=lambda v: self.on_slider_change('dd', v))
-        self.sliders['dd'].pack()
+        # Nadpisy sloupců
+        tk.Label(slider_frame, text="Minulost (5 let)", font=("Arial", 13, "bold"), bg="#FFF8E1").grid(row=0, column=0, pady=(0,5), sticky="w")
+        tk.Label(slider_frame, text="Budoucnost (1 rok)", font=("Arial", 13, "bold"), bg="#FFF8E1").grid(row=0, column=1, pady=(0,5), sticky="w")
 
-        tk.Label(control_panel, text="Celkový Růst v % (za 5 let):", bg="#FFF8E1", font=("Arial", 12, "bold")).pack(anchor="w", pady=(10,0))
-        self.lbl_growth_val = tk.Label(control_panel, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
-        self.lbl_growth_val.pack(anchor="w")
-        self.sliders['growth'] = tk.Scale(control_panel, orient=tk.HORIZONTAL, length=320, bg="#FFF8E1", resolution=0.1, showvalue=False, command=lambda v: self.on_slider_change('growth', v))
-        self.sliders['growth'].pack()
+        self.sliders = {}
+        s_len = 240 # Přiměřená délka sliderů
+        
+        # --- Řada 1: Dividenda ---
+        tk.Label(slider_frame, text="Hrubá dividenda (na 100k):", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=0, sticky="w")
+        self.lbl_div_val = tk.Label(slider_frame, text="---", fg="#2E7D32", font=("Arial", 12, "bold"), bg="#FFF8E1")
+        self.lbl_div_val.grid(row=2, column=0, sticky="w")
+        self.sliders['div'] = tk.Scale(slider_frame, orient=tk.HORIZONTAL, length=s_len, bg="#FFF8E1", resolution=10, showvalue=False, command=lambda v: self.on_slider_change('div', v))
+        self.sliders['div'].grid(row=3, column=0, padx=(0, 20))
+
+        tk.Label(slider_frame, text="Bezpečná dividenda (očištěná):", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=1, sticky="w")
+        self.lbl_fdiv_val = tk.Label(slider_frame, text="---", fg="#0288D1", font=("Arial", 12, "bold"), bg="#FFF8E1")
+        self.lbl_fdiv_val.grid(row=2, column=1, sticky="w")
+        self.sliders['fdiv'] = tk.Scale(slider_frame, orient=tk.HORIZONTAL, length=s_len, bg="#FFF8E1", resolution=10, showvalue=False, command=lambda v: self.on_slider_change('fdiv', v))
+        self.sliders['fdiv'].grid(row=3, column=1)
+
+        # --- Řada 2: Riziko / Propad ---
+        tk.Label(slider_frame, text="Max pokles v % (historie):", bg="#FFF8E1", font=("Arial", 12)).grid(row=4, column=0, sticky="w", pady=(10,0))
+        self.lbl_dd_val = tk.Label(slider_frame, text="---", fg="#C62828", font=("Arial", 12, "bold"), bg="#FFF8E1")
+        self.lbl_dd_val.grid(row=5, column=0, sticky="w")
+        self.sliders['dd'] = tk.Scale(slider_frame, orient=tk.HORIZONTAL, length=s_len, bg="#FFF8E1", resolution=0.1, showvalue=False, command=lambda v: self.on_slider_change('dd', v))
+        self.sliders['dd'].grid(row=6, column=0, padx=(0, 20))
+
+        tk.Label(slider_frame, text="Propad v krizi (95% scénář):", bg="#FFF8E1", font=("Arial", 12)).grid(row=4, column=1, sticky="w", pady=(10,0))
+        self.lbl_fdd_val = tk.Label(slider_frame, text="---", fg="#C62828", font=("Arial", 12, "bold"), bg="#FFF8E1")
+        self.lbl_fdd_val.grid(row=5, column=1, sticky="w")
+        self.sliders['fdd'] = tk.Scale(slider_frame, orient=tk.HORIZONTAL, length=s_len, bg="#FFF8E1", resolution=0.1, showvalue=False, command=lambda v: self.on_slider_change('fdd', v))
+        self.sliders['fdd'].grid(row=6, column=1)
+
+        # --- Řada 3: Růst ---
+        tk.Label(slider_frame, text="Celkový růst v %:", bg="#FFF8E1", font=("Arial", 12)).grid(row=7, column=0, sticky="w", pady=(10,0))
+        self.lbl_growth_val = tk.Label(slider_frame, text="---", fg="#2E7D32", font=("Arial", 12, "bold"), bg="#FFF8E1")
+        self.lbl_growth_val.grid(row=8, column=0, sticky="w")
+        self.sliders['growth'] = tk.Scale(slider_frame, orient=tk.HORIZONTAL, length=s_len, bg="#FFF8E1", resolution=0.1, showvalue=False, command=lambda v: self.on_slider_change('growth', v))
+        self.sliders['growth'].grid(row=9, column=0, padx=(0, 20))
+
+        tk.Label(slider_frame, text="Očekávaný růst (analytici):", bg="#FFF8E1", font=("Arial", 12)).grid(row=7, column=1, sticky="w", pady=(10,0))
+        self.lbl_fgrowth_val = tk.Label(slider_frame, text="---", fg="#0288D1", font=("Arial", 12, "bold"), bg="#FFF8E1")
+        self.lbl_fgrowth_val.grid(row=8, column=1, sticky="w")
+        self.sliders['fgrowth'] = tk.Scale(slider_frame, orient=tk.HORIZONTAL, length=s_len, bg="#FFF8E1", resolution=0.1, showvalue=False, command=lambda v: self.on_slider_change('fgrowth', v))
+        self.sliders['fgrowth'].grid(row=9, column=1)
         
         for s in self.sliders.values(): s.config(state="disabled")
 
-        tk.Label(control_panel, text="Celkové Riziko Portfolia (Volatilita):", bg="#FFF8E1", font=("Arial", 12, "bold")).pack(anchor="w", pady=(15,0))
-        self.lbl_risk_text = tk.Label(control_panel, text="---", bg="#FFF8E1", font=("Arial", 12, "bold"))
-        self.lbl_risk_text.pack(anchor="w", pady=(2, 5))
-        self.risk_progress = ttk.Progressbar(control_panel, orient=tk.HORIZONTAL, length=320, mode='determinate', maximum=30)
-        self.risk_progress.pack(pady=(0, 10))
-
         # Uložení reference na potvrzovací tlačítko
         self.btn_apply_weights = tk.Button(control_panel, text="✓ POUŽÍT NOVÉ VÁHY", command=self.apply_tuned_weights, bg="#2E7D32", fg="white", font=("Arial", 12, "bold"))
-        self.btn_apply_weights.pack(pady=20, fill=tk.X)
+        self.btn_apply_weights.pack(pady=15, fill=tk.X)
 
-        base_frame = tk.LabelFrame(control_panel, text="Aktuálně uložené portfolio (Base)", bg="#FFF8E1", padx=10, pady=10, font=("Arial", 12, "bold"))
-        base_frame.pack(fill=tk.X, pady=(0, 10))
-
-        tk.Label(base_frame, text="Hrubá Roční Dividenda:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=0, sticky="w", pady=2)
-        self.lbl_base_div = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
-        self.lbl_base_div.grid(row=0, column=1, sticky="e", padx=5)
-
-        tk.Label(base_frame, text="Max Roční Pokles v %:", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=0, sticky="w", pady=2)
-        self.lbl_base_dd = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
-        self.lbl_base_dd.grid(row=1, column=1, sticky="e", padx=5)
-
-        tk.Label(base_frame, text="Celkový Růst v %:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=0, sticky="w", pady=2)
-        self.lbl_base_growth = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
-        self.lbl_base_growth.grid(row=2, column=1, sticky="e", padx=5)
+        # Tabulka Base portfolia (zmenšená)
+        base_frame = tk.LabelFrame(control_panel, text="Aktuální (Base)", bg="#FFF8E1", font=("Arial", 12, "bold"))
+        base_frame.pack(fill=tk.X)
         
-        base_frame.columnconfigure(0, weight=1)
+        tk.Label(base_frame, text="Hrubá div:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=0, sticky="w")
+        self.lbl_base_div = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
+        self.lbl_base_div.grid(row=0, column=1, sticky="w", padx=(0,15))
+        
+        tk.Label(base_frame, text="Bezpečná div:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=2, sticky="w")
+        self.lbl_base_fdiv = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#0288D1", font=("Arial", 12, "bold"))
+        self.lbl_base_fdiv.grid(row=0, column=3, sticky="w")
+        
+        tk.Label(base_frame, text="Pokles:", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=0, sticky="w")
+        self.lbl_base_dd = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
+        self.lbl_base_dd.grid(row=1, column=1, sticky="w", padx=(0,15))
+        
+        tk.Label(base_frame, text="Krizový propad:", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=2, sticky="w")
+        self.lbl_base_fdd = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
+        self.lbl_base_fdd.grid(row=1, column=3, sticky="w")
+
+        tk.Label(base_frame, text="Růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=0, sticky="w")
+        self.lbl_base_growth = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
+        self.lbl_base_growth.grid(row=2, column=1, sticky="w", padx=(0,15))
+        
+        tk.Label(base_frame, text="Očekávaný růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=2, sticky="w")
+        self.lbl_base_fgrowth = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#0288D1", font=("Arial", 12, "bold"))
+        self.lbl_base_fgrowth.grid(row=2, column=3, sticky="w")
 
         viz_panel = tk.Frame(self.tuner_frame, bg="white")
         viz_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
         
+        # --- Přepínač zobrazení grafů ---
+        toggle_frame = tk.Frame(viz_panel, bg="white")
+        toggle_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        self.chart_view_var = tk.StringVar(value="new")
+        
+        rb_new = tk.Radiobutton(toggle_frame, text="Nové rozložení vah (tuned)", variable=self.chart_view_var, value="new", bg="white", font=("Arial", 12, "bold"), fg="#1976D2", command=self._redraw_tuner_charts)
+        rb_new.pack(side=tk.RIGHT, padx=10)
+        
+        rb_base = tk.Radiobutton(toggle_frame, text="Aktuální portfolio (base)", variable=self.chart_view_var, value="base", bg="white", font=("Arial", 12, "bold"), fg="grey", command=self._redraw_tuner_charts)
+        rb_base.pack(side=tk.RIGHT, padx=10)
+        
+        tk.Label(toggle_frame, text="Přepínání zobrazení:", bg="white", font=("Arial", 12)).pack(side=tk.RIGHT, padx=10)
+
         self.fig_tune = plt.figure(figsize=(10, 8))
         self.fig_tune.patch.set_facecolor('white')
         gs = gridspec.GridSpec(2, 2, width_ratios=[1, 1], height_ratios=[1, 1])
@@ -1576,14 +1668,13 @@ class CzechInvestorApp:
         self.tuner_base_weights = TARGETS.copy() 
         self.tuner_loading_state = self._create_loading_card(self.tuner_frame)
 
-    def _update_base_labels(self, div, dd, growth):
-        div_str = f"{div:,.0f} Kč".replace(',', ' ')
-        dd_str = f"{dd:.1f} %".replace('.', ',')
-        gr_str = f"{growth:.1f} %".replace('.', ',')
-        
-        self.lbl_base_div.config(text=div_str)
-        self.lbl_base_dd.config(text=dd_str)
-        self.lbl_base_growth.config(text=gr_str)
+    def _update_base_labels(self, metrics):
+        self.lbl_base_div.config(text=f"{metrics[0]:,.0f} Kč".replace(',', ' '))
+        self.lbl_base_dd.config(text=f"{metrics[1]:.1f} %".replace('.', ','))
+        self.lbl_base_growth.config(text=f"{metrics[2]:.1f} %".replace('.', ','))
+        self.lbl_base_fdiv.config(text=f"{metrics[3]:,.0f} Kč".replace(',', ' '))
+        self.lbl_base_fdd.config(text=f"{metrics[4]:.1f} %".replace('.', ','))
+        self.lbl_base_fgrowth.config(text=f"{metrics[5]:.1f} %".replace('.', ','))
 
     def on_checkbox_toggle(self):
         if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
@@ -1667,6 +1758,60 @@ class CzechInvestorApp:
                 self.tuner_stock_divs = np.array([div_yields.get(t, 0.03) for t in self.ordered_tickers])
                 self.tuner_stock_growths = rel_start_prices.values 
                 self.tuner_period_returns = monthly_returns 
+                
+                self.root.after(0, lambda: self.tuner_loading_state["label"].config(text="Zjišťuji výhled analytiků (fundamenty)..."))
+                safe_divs, upsides = [],[]
+                self.tuner_fundamentals = {}
+                
+                for t in self.ordered_tickers:
+                    fund = self._safe_get_fundamentals(t)
+                    
+                    # 1. Bezpečná dividenda (Penalizace při neudržitelném Payout Ratiu)
+                    raw_yield = div_yields.get(t, 0.0)
+                    payout = fund['payout_ratio']
+                    
+                    meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
+                    sector = meta.get("sector", "Unknown")
+                    
+                    # REITs (Real Estate) a BDC (Financial) mají ze zákona uměle vysoký výplatní poměr.
+                    # Pro Consumer Defensive (PEP, ULVR) dáme toleranci do 95 %, protože mají extrémně stabilní cash-flow.
+                    if sector in ["Real Estate", "Financial"]:
+                        limit = 1.5
+                    elif sector == "Consumer Defensive":
+                        limit = 0.95
+                    else:
+                        limit = 0.9
+                    
+                    # Účetní anomálie z odpisů nemovitostí a akvizic (Payout > 200 %, např. O, ABBV).
+                    # V takovém případě věříme reálnému cash-flow a dividendu nepenalizujeme.
+                    if payout > 2.0:
+                        safe_yield = raw_yield
+                        payout = -1 # Značka pro Tooltip, že data jsou účetně zkreslená
+                    else:
+                        safe_yield = raw_yield if payout <= limit else raw_yield * DIV_YIELD_DROP
+                        
+                    safe_divs.append(safe_yield)
+                    
+                    self.tuner_fundamentals[t] = {
+                        "payout_ratio": payout,
+                        "raw_yield": raw_yield,
+                        "safe_yield": safe_yield
+                    }
+                    
+                    # 2. Cílový růst (Analytici vs. Historie)
+                    tp = fund['target_price']
+                    cp = fund['current_price']
+                    if tp and cp and cp > 0:
+                        ups = (tp / cp) - 1.0
+                    else:
+                        # Fallback u ETF: Vezmeme průměrný historický roční růst, ale zarovnáme max na 10 %
+                        hist_growth_ratio = 1.0 / self.tuner_stock_growths[self.ordered_tickers.index(t)]
+                        ann_ret = (hist_growth_ratio ** (1/5.0)) - 1.0 if hist_growth_ratio > 0 else 0.0
+                        ups = min(ann_ret, 0.10)
+                    upsides.append(ups)
+                    
+                self.tuner_safe_divs = np.array(safe_divs)
+                self.tuner_upsides = np.array(upsides)
                 self.tuner_data_loaded = True
             
             n_cores = multiprocessing.cpu_count()
@@ -1699,17 +1844,29 @@ class CzechInvestorApp:
             base_w_exact = np.array([TARGETS.get(t, 0.0) for t in self.ordered_tickers])
             if np.sum(base_w_exact) > 0:
                 base_w_exact = base_w_exact / np.sum(base_w_exact) 
-                b_div = np.dot(base_w_exact, self.tuner_stock_divs) * 100000
                 
+                # 1. Historické metriky
+                b_div = np.dot(base_w_exact, self.tuner_stock_divs) * 100000
                 b_rets = np.dot(self.tuner_period_returns.values, base_w_exact.T)
                 b_cum = (1 + b_rets).cumprod(axis=0)
-                
-                # Skutečný Total Return se započítáním reinvestice
                 b_growth = (b_cum[-1] - 1.0) * 100 if len(b_cum) > 0 else 0
-                
                 b_run_max = np.maximum.accumulate(b_cum, axis=0)
                 b_dd = np.min((b_cum - b_run_max) / b_run_max, axis=0) * 100
-                self.root.after(0, lambda: self._update_base_labels(b_div, b_dd, b_growth))
+                
+                # 2. Budoucí (predikované) metriky
+                b_fdiv = np.dot(base_w_exact, self.tuner_safe_divs) * 100000
+                b_fgrowth_dec = np.dot(base_w_exact, self.tuner_upsides)
+                
+                # Volatilita base portfolia pro výpočet krizového propadu
+                b_var = np.dot(base_w_exact.T, np.dot(self.tuner_cov_matrix.values, base_w_exact))
+                b_vol = np.sqrt(b_var)
+                b_fdd = min((b_fgrowth_dec - 1.645 * b_vol) * 100, 0.0)
+                b_fgrowth = b_fgrowth_dec * 100
+                
+                # 3. Sbalení všech 6 metrik do jednoho pole a odeslání do UI
+                b_m =[b_div, b_dd, b_growth, b_fdiv, b_fdd, b_fgrowth]
+                self.base_metrics_data = b_m # Uložíme pro potřeby kreslení grafu
+                self.root.after(0, lambda: self._update_base_labels(b_m))
             
             adj_min_w = MIN_W
             adj_max_w = MAX_W
@@ -1760,7 +1917,8 @@ class CzechInvestorApp:
                 tasks =[]
                 for _ in range(n_cores):
                     tasks.append((chunk_size, active_indices, fixed_weights, target_sum, 
-                                    adj_min_w, adj_max_w, EPS, self.tuner_stock_divs, self.tuner_stock_growths, period_returns_vals))
+                                    adj_min_w, adj_max_w, EPS, self.tuner_stock_divs, self.tuner_stock_growths, period_returns_vals,
+                                    self.tuner_safe_divs, self.tuner_upsides, self.tuner_cov_matrix.values))
                 
                 with multiprocessing.Pool(processes=n_cores) as pool:
                     chunk_results = pool.starmap(_worker_simulation_task, tasks)
@@ -1820,17 +1978,16 @@ class CzechInvestorApp:
             min_dd, max_dd = np.min(self.sim_metrics[:,1]), np.max(self.sim_metrics[:,1])
             min_gr, max_gr = np.min(self.sim_metrics[:,2]), np.max(self.sim_metrics[:,2])
             
-            self.root.after(0, lambda: self._setup_sliders_after_load(min_div, max_div, min_dd, max_dd, min_gr, max_gr, best_idx))
+            self.root.after(0, lambda: self._setup_sliders_after_load(np.min(self.sim_metrics, axis=0), np.max(self.sim_metrics, axis=0), best_idx))
             
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda msg=err_msg: messagebox.showerror("Chyba", msg))
 
-    def _setup_sliders_after_load(self, min_d, max_d, min_dd, max_dd, min_gr, max_gr, best_idx):
-        self.sliders['div'].config(from_=min_d, to=max_d, state="normal")
-        self.sliders['dd'].config(from_=min_dd, to=max_dd, state="normal")
-        self.sliders['growth'].config(from_=min_gr, to=max_gr, state="normal")
-        
+    def _setup_sliders_after_load(self, mins, maxs, best_idx):
+        keys =['div', 'dd', 'growth', 'fdiv', 'fdd', 'fgrowth']
+        for i, k in enumerate(keys):
+            self.sliders[k].config(from_=mins[i], to=maxs[i], state="normal")
         self.current_sim_idx = best_idx
         self.update_sliders_visuals(from_user_interaction=False)
         self.tuner_status.config(text="Upravte slidery k nalezení ideálních vah.", fg="green")
@@ -1838,14 +1995,13 @@ class CzechInvestorApp:
     def on_slider_change(self, source_key, value):
         if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
         if self.updating_sliders or self.sim_metrics is None: return
-        
         if self._slider_job: self.root.after_cancel(self._slider_job)
         self._slider_job = self.root.after(100, lambda: self._perform_tuning_calculation(source_key, value))
 
     def _perform_tuning_calculation(self, source_key, value):
         """Experimentální hledání optima s využitím kvadratické chyby pro neaktivní slidery."""
         val = float(value)
-        col_idx = {'div': 0, 'dd': 1, 'growth': 2}[source_key]
+        col_idx = {'div': 0, 'dd': 1, 'growth': 2, 'fdiv': 3, 'fdd': 4, 'fgrowth': 5}[source_key]
         
         # Získání rozsahů (rozpětí max-min) pro všechny 3 metriky kvůli normalizaci
         rngs = np.ptp(self.sim_metrics, axis=0)
@@ -1858,7 +2014,7 @@ class CzechInvestorApp:
         current_metrics = self.sim_metrics[self.current_sim_idx]
         other_metrics_sq_error = np.zeros(len(self.sim_metrics))
         
-        for i in range(3):
+        for i in range(6):
             if i != col_idx:
                 # Rozdíl normalizujeme a ihned umocníme na druhou
                 diff_norm = (self.sim_metrics[:, i] - current_metrics[i]) / rngs[i]
@@ -1871,8 +2027,8 @@ class CzechInvestorApp:
         w_dist = np.linalg.norm(self.sim_weights - current_w, axis=1)
         
         # Celkové skóre (čím menší, tím lepší)
-        # ENFORCEMENT_W (0.7) = tah na cíl u drženého slideru
-        # STABILITY_W (0.3) = fixace zbylých sliderů pomocí kvadratické chyby
+        # ENFORCEMENT_W = tah na cíl u drženého slideru
+        # STABILITY_W = fixace zbylých sliderů pomocí kvadratické chyby
         # 0.1 * w_dist = tie-breaker pro váhy
         score = (ENFORCEMENT_W * primary_diff_norm) + (STABILITY_W * other_metrics_sq_error) + (0.1 * w_dist)
         
@@ -1885,132 +2041,156 @@ class CzechInvestorApp:
     def update_sliders_visuals(self, from_user_interaction=False, skip_key=None):
         self.updating_sliders = True
         metrics = self.sim_metrics[self.current_sim_idx]
-        weights = self.sim_weights[self.current_sim_idx]
         
+        # Propsání do popisků
         self.lbl_div_val.config(text=f"{metrics[0]:.0f} Kč".replace(',', ' '))
         self.lbl_dd_val.config(text=f"{metrics[1]:.1f} %".replace('.', ','))
         self.lbl_growth_val.config(text=f"{metrics[2]:.1f} %".replace('.', ','))
+        self.lbl_fdiv_val.config(text=f"{metrics[3]:.0f} Kč".replace(',', ' '))
+        self.lbl_fdd_val.config(text=f"{metrics[4]:.1f} %".replace('.', ','))
+        self.lbl_fgrowth_val.config(text=f"{metrics[5]:.1f} %".replace('.', ','))
         
-        if not (from_user_interaction and skip_key == 'div'): self.sliders['div'].set(metrics[0])
-        if not (from_user_interaction and skip_key == 'dd'): self.sliders['dd'].set(metrics[1])
-        if not (from_user_interaction and skip_key == 'growth'): self.sliders['growth'].set(metrics[2])
-            
-        if hasattr(self, 'tuner_cov_matrix'):
-            cov_mat = self.tuner_cov_matrix.values
-            port_var = np.dot(weights.T, np.dot(cov_mat, weights))
-            port_vol = np.sqrt(port_var) * 100 
-            
-            if port_vol < 12.0: risk_word, r_color = "Nízké (Konzervativní)", "#2E7D32"
-            elif port_vol < 16.0: risk_word, r_color = "Střední (Vyvážené)", "#F57F17"
-            elif port_vol < 22.0: risk_word, r_color = "Vyšší (Dynamické)", "#E65100"
-            else: risk_word, r_color = "Vysoké (Agresivní)", "#C62828"
+        # Posun sliderů
+        keys =['div', 'dd', 'growth', 'fdiv', 'fdd', 'fgrowth']
+        for i, k in enumerate(keys):
+            if not (from_user_interaction and skip_key == k):
+                self.sliders[k].set(metrics[i])
                 
-            self.lbl_risk_text.config(text=f"{risk_word} ({port_vol:.1f} % p.a.)".replace('.', ','), fg=r_color)
-            self.risk_progress['value'] = min(port_vol, 30.0)
-            
-        self.ax_pie.clear()
-        self.ax_div_pie.clear()
-        self.ax_curve.clear()
-        self.ax_bars.clear()
+        # Samotné překreslení grafů delegujeme na novou metodu, která přečte stav přepínačů
+        self._redraw_tuner_charts()
+        self.updating_sliders = False
+
+    def _redraw_tuner_charts(self):
+        if getattr(self, 'sim_weights', None) is None: return
         
-        labels_weights =[f"{t}\n{w*100:.1f}%".replace('.', ',') if w >= 0.05 else "" for t, w in zip(self.ordered_tickers, weights)]
-        self.wedges_weights, _ = self.ax_pie.pie(weights, labels=labels_weights, startangle=140, colors=plt.cm.tab20.colors)
-        self.ax_pie.set_title("Nové Váhy (Tuned)")
+        view_mode = getattr(self, 'chart_view_var', tk.StringVar(value="new")).get()
+        new_weights = self.sim_weights[self.current_sim_idx]
+        base_w = np.array([self.tuner_base_weights.get(t, 0) for t in self.ordered_tickers])
         
-        ticker_div_czk = weights * self.tuner_stock_divs * 100000
-        div_labels, div_sizes, div_tickers = [], [],[]
-        sorted_div_indices = np.argsort(ticker_div_czk)[::-1]
-        for i in sorted_div_indices:
-            val = ticker_div_czk[i]
-            if val > 0:
-                div_tickers.append(self.ordered_tickers[i])
-                div_labels.append(self.ordered_tickers[i])
-                div_sizes.append(val)
+        if view_mode == "base":
+            plot_weights = base_w
+            current_metrics = getattr(self, 'base_metrics_data', [0]*6)
+            pie_title_suffix = "(base)"
+            main_color = "grey"
+        else:
+            plot_weights = new_weights
+            current_metrics = self.sim_metrics[self.current_sim_idx]
+            pie_title_suffix = "(tuned)"
+            main_color = "#1976D2"
+
+        self.ax_pie.clear(); self.ax_div_pie.clear(); self.ax_curve.clear(); self.ax_bars.clear()
+        self._current_pie_weights = plot_weights
+        
+        # --- KOLÁČE (Oprava: Odstraněno dvojité násobení stem u formátu %) ---
+        labels_weights =[f"{t}\n{w:.1%}".replace('.', ',') if w >= 0.05 else "" for t, w in zip(self.ordered_tickers, plot_weights)]
+        self.wedges_weights, _ = self.ax_pie.pie(plot_weights, labels=labels_weights, startangle=140, colors=plt.cm.tab20.colors)
+        self.ax_pie.set_title(f"Rozložení vah {pie_title_suffix}")
+        
+        ticker_div_czk = plot_weights * self.tuner_stock_divs * 100000
+        div_tickers, div_sizes = [], []
+        sorted_indices = np.argsort(ticker_div_czk)[::-1]
+        for i in sorted_indices:
+            if ticker_div_czk[i] > 0:
+                div_tickers.append(self.ordered_tickers[i]); div_sizes.append(ticker_div_czk[i])
         
         if div_sizes:
-            total_size = sum(div_sizes)
-            final_div_labels =[l if (s/total_size) > 0.03 else "" for l, s in zip(div_labels, div_sizes)]
-            self.wedges_divs, _, _ = self.ax_div_pie.pie(div_sizes, labels=final_div_labels, 
-                                                         autopct=lambda p: f'{p:.1f}%'.replace('.', ',') if p > 3 else '', 
-                                                         startangle=140, colors=plt.cm.tab20b.colors)
-            self.div_data_tickers = div_tickers 
-            self.div_data_sizes = div_sizes
-            self.ax_div_pie.set_title("Zdroje Dividend (Tuned)")        
-            
-            # Detekce přílišné koncentrace dividendového příjmu
-            # Seznam div_sizes je už z předchozího kroku seřazený sestupně, 
-            # takže na indexu 0 je s jistotou největší plátce.
-            if len(div_sizes) > 0:
-                max_share = div_sizes[0] / total_size
-                if max_share > MAX_DIV_SHARE:
-                    pct_share = max_share * 100
-                    pct_str = f"{pct_share:.1f}".replace('.', ',')
-                    warning_text = f"⚠️ Varování: Akcie {div_tickers[0]} generuje {pct_str} % dividend"
-                    # Vykreslení textu pod koláč (souřadnice y=-1.3 je kousek pod spodním okrajem grafu)
-                    self.ax_div_pie.text(0, -1.3, warning_text, ha='center', va='center', 
-                                         color='#E65100', fontsize=11, fontweight='bold')
-            
-        base_w = np.array([self.tuner_base_weights.get(t, 0) for t in self.ordered_tickers])
-        # Normalizace k prvnímu dni, aby investice začínala na 100k a rostla v čase
-        norm_prices = self.tuner_hist_prices / self.tuner_hist_prices.iloc[0] 
-        curve_base = norm_prices.dot(base_w) * 100000
-        curve_new = norm_prices.dot(weights) * 100000
+            total_div = sum(div_sizes)
+            f_labels =[l if (s/total_div) > 0.03 else "" for l, s in zip(div_tickers, div_sizes)]
+            self.wedges_divs, _, _ = self.ax_div_pie.pie(div_sizes, labels=f_labels, autopct=lambda p: f'{p:.1f}%'.replace('.', ',') if p > 3 else '', startangle=140, colors=plt.cm.tab20b.colors)
+            self.div_data_tickers = div_tickers; self.div_data_sizes = div_sizes
+            self.ax_div_pie.set_title(f"Zdroje dividend {pie_title_suffix}")
         
-        self.ax_curve.plot(curve_base.index, curve_base.values, color='grey', linestyle='--', label='Aktuální (Base)')
-        self.ax_curve.plot(curve_new.index, curve_new.values, color='#1976D2', label='Nové (Hrubé)')
+        # --- HLAVNÍ GRAF: HISTORIE + PREDIKCE ---
+        norm_prices = self.tuner_hist_prices / self.tuner_hist_prices.iloc[0]
+        curve_to_plot = norm_prices.dot(plot_weights) * 100000
         
-        # --- VÝPOČET ČISTÉHO RŮSTU PO ZDANĚNÍ DIVIDEND (Ztráta 15 %) ---
-        # 1. Zjistíme průměrný dividendový výnos celého namíchaného portfolia
-        port_div_yield = np.dot(weights, self.tuner_stock_divs)
-        
-        # 2. Roční "daňová brzda" (kolik procent z celkového majetku nám sebere daň)
-        tax_drag_annual = port_div_yield * 0.15 
-        
-        # 3. Výpočet přesného časového úseku v letech pro každý bod na křivce
-        years_from_start = (curve_new.index - curve_new.index[0]).days / 365.25
-        
-        # 4. Aplikace daňového odpočtu (odstraní složené úročení z té části, kterou spolkla daň)
-        tax_discount_factor = (1 - tax_drag_annual) ** years_from_start
-        curve_new_net = curve_new * tax_discount_factor
-        
-        # 5. Vykreslení tenké bleděmodré čáry
-        self.ax_curve.plot(curve_new_net.index, curve_new_net.values, color='#81D4FA', linestyle='-', linewidth=1.5, label='Nové (Čisté po zdanění)')
-        
+        # 1. Kreslení S&P 500 (včetně jeho budoucího driftu)
         if hasattr(self, 'tuner_spy_prices') and not self.tuner_spy_prices.empty:
             spy_aligned = self.tuner_spy_prices.reindex(norm_prices.index).ffill().bfill()
             curve_spy = (spy_aligned / spy_aligned.iloc[0]) * 100000
-            self.ax_curve.plot(curve_spy.index, curve_spy.values, color='#D32F2F', linestyle=':', linewidth=2, label='S&P 500 (SPY)')
-        
-        self.ax_curve.set_title("Simulace 100k Kč (Kapitálový Růst)")
-        self.ax_curve.grid(True, linestyle='--', alpha=0.5)
-        self.ax_curve.legend()
+            self.ax_curve.plot(curve_spy.index, curve_spy.values, color='#D32F2F', linestyle=':', linewidth=1.5, label='S&P 500 (SPY)', alpha=0.7)
+            
+            # Predikce pro SPY (pokračování trendu)
+            last_date = curve_spy.index[-1]
+            last_val_spy = curve_spy.values[-1]
+            future_dates = pd.bdate_range(start=last_date, periods=252)
+            
+            spy_ann_return = (curve_spy.values[-1] / curve_spy.values[0]) ** (1/5.0) - 1.0
+            spy_daily_drift = spy_ann_return / 252.0
+            spy_path = last_val_spy * np.exp(spy_daily_drift * np.arange(1, 253))
+            self.ax_curve.plot(future_dates, spy_path, color='#D32F2F', linestyle=':', linewidth=1.5, alpha=0.5)
 
+        # 2. Kreslení Baseline (pokud jsme v Tuned módu, dáme ji na pozadí)
+        if view_mode == "new":
+            curve_base = norm_prices.dot(base_w) * 100000
+            self.ax_curve.plot(curve_base.index, curve_base.values, color='grey', linestyle='--', label='Aktuální (base)', alpha=0.6)
+
+        # 3. Kreslení Aktivní křivky (Base nebo Tuned)
+        self.ax_curve.plot(curve_to_plot.index, curve_to_plot.values, color=main_color, linewidth=2, label=f'Portfolio {pie_title_suffix} (hrubé)')
+        
+        # --- VÝPOČET A KRESLENÍ ZDANĚNÉ KŘIVKY (15% daň z dividend) ---
+        # Zjistíme dividendový výnos pro aktuálně vykreslované váhy
+        current_weights_div_yield = np.dot(plot_weights, self.tuner_stock_divs)
+        tax_drag_annual = current_weights_div_yield * 0.15
+        
+        # Výpočet času od začátku simulace pro každý bod
+        days_from_start = (curve_to_plot.index - curve_to_plot.index[0]).days
+        years_from_start = days_from_start / 365.25
+        
+        # Aplikace daňové brzdy na celkový výnos
+        curve_net = curve_to_plot * ((1 - tax_drag_annual) ** years_from_start)
+        
+        self.ax_curve.plot(curve_net.index, curve_net.values, color='#81D4FA', linestyle='-', linewidth=1.5, label=f'Portfolio {pie_title_suffix} (zdaněné)')
+        
+        # 4. Kreslení Trychtýře pro aktivní křivku
+        last_date = curve_to_plot.index[-1]
+        last_val = curve_to_plot.values[-1]
+        future_dates = pd.bdate_range(start=last_date, periods=252)
+        
+        daily_drift = (current_metrics[5] / 100.0) / 252.0
+        cov_mat = self.tuner_cov_matrix.values
+        annual_vol = np.sqrt(np.dot(plot_weights.T, np.dot(cov_mat, plot_weights)))
+        daily_vol = annual_vol / np.sqrt(252)
+        
+        time_steps = np.arange(1, 253)
+        expected_path = last_val * np.exp((daily_drift - 0.5 * daily_vol**2) * time_steps)
+        upper_2sig = last_val * np.exp((daily_drift - 0.5 * daily_vol**2) * time_steps + 2 * daily_vol * np.sqrt(time_steps))
+        lower_2sig = last_val * np.exp((daily_drift - 0.5 * daily_vol**2) * time_steps - 2 * daily_vol * np.sqrt(time_steps))
+
+        self.ax_curve.axvline(x=last_date, color='red', linestyle='--', linewidth=1, alpha=0.7)
+        self.ax_curve.plot(future_dates, expected_path, color='#F57F17', linestyle='-.', linewidth=2, label='Predikce růstu (střed)')
+        self.ax_curve.fill_between(future_dates, lower_2sig, upper_2sig, color='#FFF59D', alpha=0.4, label='95% Trychtýř nejistoty')
+        
+        self.ax_curve.set_title(f"Simulace 100k Kč {pie_title_suffix}")
+        self.ax_curve.grid(True, linestyle='--', alpha=0.5)
+        self.ax_curve.legend(loc='upper left', fontsize=8)
+
+        # --- BAR CHART ---
         years = sorted(list(set(self.tuner_hist_prices.index.year)))
-        bars_base, bars_new, lbls = [], [],[]
+        bars_base, bars_new, lbls = [], [], []
+        curve_base_all = norm_prices.dot(base_w) * 100000
+        curve_new_all = norm_prices.dot(new_weights) * 100000
+        
         for y in years:
-            sb = curve_base[curve_base.index.year == y]
-            sn = curve_new[curve_new.index.year == y]
+            sb = curve_base_all[curve_base_all.index.year == y]
+            sn = curve_new_all[curve_new_all.index.year == y]
             if len(sb) > 0:
-                # Historická data již obsahují dividendy (Total Return),
-                # stačí tedy odečíst konec roku od začátku roku.
-                val_b = sb.iloc[-1] - sb.iloc[0]
-                val_n = sn.iloc[-1] - sn.iloc[0]
-                bars_base.append(val_b)
-                bars_new.append(val_n)
+                bars_base.append(sb.iloc[-1] - sb.iloc[0])
+                bars_new.append(sn.iloc[-1] - sn.iloc[0])
                 lbls.append(str(y))
-                
-        x = np.arange(len(lbls))
-        width = 0.35
-        self.ax_bars.bar(x - width/2, bars_base, width, label='Aktuální (Total Return)', color='lightgrey')
-        self.ax_bars.bar(x + width/2, bars_new, width, label='Nové (Total Return)', color='#4CAF50')
-        self.ax_bars.set_xticks(x)
-        self.ax_bars.set_xticklabels(lbls)
-        self.ax_bars.set_title("Roční Zisk [Kč]")
-        self.ax_bars.grid(axis='y', linestyle='--', alpha=0.5)
-        self.ax_bars.legend()
+        
+        x = np.arange(len(lbls)); width = 0.35
+        if view_mode == "base":
+            self.ax_bars.bar(x, bars_base, width*2, label='Base (total return)', color='grey')
+        else:
+            self.ax_bars.bar(x - width/2, bars_base, width, label='Base', color='lightgrey')
+            self.ax_bars.bar(x + width/2, bars_new, width, label='Tuned', color='#4CAF50')
+        
+        self.ax_bars.set_xticks(x); self.ax_bars.set_xticklabels(lbls)
+        self.ax_bars.set_title("Roční zisk [Kč]")
+        self.ax_bars.grid(axis='y', linestyle='--', alpha=0.5); self.ax_bars.legend(fontsize=8)
         
         self.canvas_tune.draw()
-        self.updating_sliders = False
         
     def apply_tuned_weights(self):
         if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
@@ -2023,8 +2203,9 @@ class CzechInvestorApp:
             
         self.save_data() 
         
+        # 'metrics' už je pole o 6 prvcích z vybrané simulace, takže ho jen předáme dál
         metrics = self.sim_metrics[self.current_sim_idx]
-        self._update_base_labels(metrics[0], metrics[1], metrics[2])
+        self._update_base_labels(metrics)
         messagebox.showinfo("Úspěch", "Nové cílové váhy byly úspěšně aplikovány a uloženy do souboru. Záložka Nákupu bude nyní počítat návrhy s těmito novými vahami.")
 
     # --------------------------------------------------------------------------
@@ -3206,8 +3387,13 @@ class CzechInvestorApp:
             for i, wedge in enumerate(self.wedges_weights):
                 if wedge.contains(event)[0]:
                     ticker = self.ordered_tickers[i]
-                    weight = self.sim_weights[self.current_sim_idx][i]
-                    target_text = f"{ticker}\nVáha: {weight:.1%}".replace('.', ',')
+                    
+                    # Bereme váhy z aktuálně překresleného grafu (zajišťuje kompatibilitu s přepínačem Base/Tuned)
+                    weight = getattr(self, '_current_pie_weights', self.sim_weights[self.current_sim_idx])[i]
+                    
+                    # Čárky aplikujeme pouze na samotná čísla, nikoliv na název tickeru
+                    weight_str = f"{weight:.1%}".replace('.', ',')
+                    target_text = f"{ticker}\nVáha: {weight_str}"
                     break
 
         # Tooltip pro zdroje dividend
@@ -3217,27 +3403,60 @@ class CzechInvestorApp:
                     ticker = self.div_data_tickers[i]
                     val = self.div_data_sizes[i]
                     total = sum(self.div_data_sizes)
+                    
                     val_str = f"{val:,.0f}".replace(',', ' ')
-                    target_text = f"{ticker}\nPodíl: {val/total:.1%}\n({val_str} Kč)".replace('.', ',')
+                    pct_str = f"{val/total:.1%}".replace('.', ',')
+                    target_text = f"{ticker}\nPodíl: {pct_str}\n({val_str} Kč)"
+                    
+                    if hasattr(self, 'tuner_fundamentals') and ticker in self.tuner_fundamentals:
+                        fund = self.tuner_fundamentals[ticker]
+                        meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(ticker, {})
+                        sector = meta.get("sector", "Unknown")
+                        
+                        # --- SYNCHRONIZACE LIMITŮ S VÝPOČETNÍM JÁDREM ---
+                        if sector in ["Real Estate", "Financial"]:
+                            limit = 1.5
+                        elif sector == "Consumer Defensive":
+                            limit = 0.95 # PepsiCo (94%) se nyní vejde do limitu
+                        else:
+                            limit = 0.9
+                        
+                        if fund['payout_ratio'] == -1:
+                            target_text += f"\n\nℹ️ Payout poměr ignorován\n(účetní anomálie zisku)"
+                        elif fund['payout_ratio'] > limit:
+                            pr_str = f"{fund['payout_ratio']*100:.0f} %".replace('.', ',')
+                            safe_str = f"{fund['safe_yield']*100:.2f} %".replace('.', ',')
+                            target_text += f"\n\n⚠️ Payout: {pr_str}\n(Zisk nepokrývá dividendu!)\nPředpoklad na 1 rok snížen: {safe_str}"
                     break
 
         if target_text: self._show_tooltip(target_text)
         else: self._hide_tooltip()
 
     def _show_tooltip(self, text):
-        """Vytvoří a napozicuje plovoucí okénko u kurzoru myši."""
+        """Vytvoří a napozicuje skutečné nezávislé plovoucí okno u kurzoru myši."""
         if self.pie_tooltip is None:
-            self.pie_tooltip = tk.Label(self.root, text="", bg="#FFFFE1", relief=tk.SOLID, 
-                                        borderwidth=1, font=("Arial", 11), justify=tk.LEFT)
+            self.pie_tooltip = tk.Toplevel(self.root)
+            self.pie_tooltip.wm_overrideredirect(True) # Odstraní rámeček okna (minimalistický vzhled)
+            self.pie_tooltip.wm_attributes("-topmost", True) # Drží okénko vždy nad ostatními
+            
+            # Vnitřní label pro text
+            self.pie_tooltip_lbl = tk.Label(self.pie_tooltip, text="", bg="#FFFFE1", relief=tk.SOLID, 
+                                            borderwidth=1, font=("Arial", 11), justify=tk.LEFT)
+            self.pie_tooltip_lbl.pack()
         
-        self.pie_tooltip.config(text=text)
-        x = self.root.winfo_pointerx() - self.root.winfo_rootx() + 15
-        y = self.root.winfo_pointery() - self.root.winfo_rooty() + 15
-        self.pie_tooltip.place(x=x, y=y)
+        self.pie_tooltip_lbl.config(text=text)
+        
+        # Souřadnice bereme přímo z obrazovky (bez ohledu na to, kde leží okno appky)
+        x = self.root.winfo_pointerx() + 15
+        y = self.root.winfo_pointery() + 15
+        
+        self.pie_tooltip.geometry(f"+{x}+{y}")
+        self.pie_tooltip.deiconify() # Zobrazí okénko, pokud bylo skryto
 
     def _hide_tooltip(self):
         """Skryje plovoucí okénko."""
-        if self.pie_tooltip: self.pie_tooltip.place_forget()
+        if self.pie_tooltip: 
+            self.pie_tooltip.withdraw() # Skryje okénko, ale nezničí ho
 
     # --------------------------------------------------------------------------
     # TAB 6: ODMĚNA PRO AUTORA (DONATION)
