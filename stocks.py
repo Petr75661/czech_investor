@@ -1599,9 +1599,16 @@ class CzechInvestorApp:
         
         for s in self.sliders.values(): s.config(state="disabled")
 
+        # --- BLOK VOLATILITY (RIZIKA) ---
+        tk.Label(control_panel, text="Celkové riziko portfolia (volatilita):", bg="#FFF8E1", font=("Arial", 12, "bold")).pack(anchor="w", pady=(15, 0))
+        self.lbl_risk_text = tk.Label(control_panel, text="---", bg="#FFF8E1", font=("Arial", 12, "bold"))
+        self.lbl_risk_text.pack(anchor="w", pady=(2, 5))
+        self.risk_progress = ttk.Progressbar(control_panel, orient=tk.HORIZONTAL, length=500, mode='determinate', maximum=30)
+        self.risk_progress.pack(pady=(0, 10))
+
         # Uložení reference na potvrzovací tlačítko
         self.btn_apply_weights = tk.Button(control_panel, text="✓ POUŽÍT NOVÉ VÁHY", command=self.apply_tuned_weights, bg="#2E7D32", fg="white", font=("Arial", 12, "bold"))
-        self.btn_apply_weights.pack(pady=15, fill=tk.X)
+        self.btn_apply_weights.pack(pady=10, fill=tk.X)
 
         # Tabulka Base portfolia (zmenšená)
         base_frame = tk.LabelFrame(control_panel, text="Aktuální (Base)", bg="#FFF8E1", font=("Arial", 12, "bold"))
@@ -1630,6 +1637,10 @@ class CzechInvestorApp:
         tk.Label(base_frame, text="Očekávaný růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=2, sticky="w")
         self.lbl_base_fgrowth = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#0288D1", font=("Arial", 12, "bold"))
         self.lbl_base_fgrowth.grid(row=2, column=3, sticky="w")
+
+        tk.Label(base_frame, text="Volatilita:", bg="#FFF8E1", font=("Arial", 12)).grid(row=3, column=0, sticky="w")
+        self.lbl_base_vol = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#F57F17", font=("Arial", 12, "bold"))
+        self.lbl_base_vol.grid(row=3, column=1, sticky="w")
 
         viz_panel = tk.Frame(self.tuner_frame, bg="white")
         viz_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -1676,7 +1687,9 @@ class CzechInvestorApp:
         self.lbl_base_fdiv.config(text=f"{metrics[3]:,.0f} Kč".replace(',', ' '))
         self.lbl_base_fdd.config(text=f"{metrics[4]:.1f} %".replace('.', ','))
         self.lbl_base_fgrowth.config(text=f"{metrics[5]:.1f} %".replace('.', ','))
-
+        if len(metrics) > 6:
+            self.lbl_base_vol.config(text=f"{metrics[6]:.1f} %".replace('.', ','))
+        
     def on_checkbox_toggle(self):
         if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
         if not getattr(self, 'tuner_data_loaded', False): return 
@@ -1865,7 +1878,7 @@ class CzechInvestorApp:
                 b_fgrowth = b_fgrowth_dec * 100
                 
                 # 3. Sbalení všech 6 metrik do jednoho pole a odeslání do UI
-                b_m =[b_div, b_dd, b_growth, b_fdiv, b_fdd, b_fgrowth]
+                b_m =[b_div, b_dd, b_growth, b_fdiv, b_fdd, b_fgrowth, b_vol * 100]
                 self.base_metrics_data = b_m # Uložíme pro potřeby kreslení grafu
                 self.root.after(0, lambda: self._update_base_labels(b_m))
             
@@ -2042,6 +2055,7 @@ class CzechInvestorApp:
     def update_sliders_visuals(self, from_user_interaction=False, skip_key=None):
         self.updating_sliders = True
         metrics = self.sim_metrics[self.current_sim_idx]
+        weights = self.sim_weights[self.current_sim_idx]
         
         # Propsání do popisků
         self.lbl_div_val.config(text=f"{metrics[0]:.0f} Kč".replace(',', ' '))
@@ -2056,8 +2070,22 @@ class CzechInvestorApp:
         for i, k in enumerate(keys):
             if not (from_user_interaction and skip_key == k):
                 self.sliders[k].set(metrics[i])
+
+        # --- AKTUALIZACE VOLATILITY ---
+        if hasattr(self, 'tuner_cov_matrix'):
+            cov_mat = self.tuner_cov_matrix.values
+            port_var = np.dot(weights.T, np.dot(cov_mat, weights))
+            port_vol = np.sqrt(port_var) * 100 
+            
+            if port_vol < 12.0: risk_word, r_color = "Nízké (konzervativní)", "#2E7D32"
+            elif port_vol < 16.0: risk_word, r_color = "Střední (vyvážené)", "#F57F17"
+            elif port_vol < 22.0: risk_word, r_color = "Vyšší (dynamické)", "#E65100"
+            else: risk_word, r_color = "Vysoké (agresivní)", "#C62828"
                 
-        # Samotné překreslení grafů delegujeme na novou metodu, která přečte stav přepínačů
+            self.lbl_risk_text.config(text=f"{risk_word} ({port_vol:.1f} % p.a.)".replace('.', ','), fg=r_color)
+            self.risk_progress['value'] = min(port_vol, 30.0)
+                
+        # Samotné překreslení grafů delegujeme na metodu, která přečte stav přepínačů
         self._redraw_tuner_charts()
         self.updating_sliders = False
 
