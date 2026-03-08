@@ -339,41 +339,64 @@ class CzechInvestorApp:
         threading.Thread(target=self._scrape_worker, args=(last_year,), daemon=True).start()
 
     def _scrape_worker(self, year):
+        import re
         url = f"https://www.kurzy.cz/kurzy-men/jednotny-kurz/{year}/"
+        
+        # Klíčové hlavičky, aby nás web kurzy.cz nepovažoval za bot a neblokoval
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'cs,en-US;q=0.7,en;q=0.3',
+        }
+
         try:
-            resp = requests.get(url, timeout=5)
-            # 1. Kontrola, zda server vůbec odpověděl správně
-            if resp.status_code != 200: 
-                raise ConnectionError(f"Server vrátil chybový kód: {resp.status_code}")
-                
+            # Použijeme Session pro stabilnější připojení
+            session = requests.Session()
+            resp = session.get(url, headers=headers, timeout=10)
+            resp.encoding = 'utf-8'
+            
+            if resp.status_code != 200:
+                raise ConnectionError(f"Server vrátil chybu {resp.status_code}")
+
             soup = BeautifulSoup(resp.text, 'html.parser')
             rates_found = {}
-            for row in soup.find_all('tr'):
-                text = row.get_text()
-                if "Americký dolar" in text or "USD" in text:
-                    cols = row.find_all('td')
-                    if len(cols) >= 3: 
-                        rates_found["USD"] = float(cols[-1].get_text().strip().replace(',', '.'))
-                if "Britská libra" in text or "GBP" in text:
-                    cols = row.find_all('td')
-                    if len(cols) >= 3: 
-                        rates_found["GBP"] = float(cols[-1].get_text().strip().replace(',', '.'))
-            
-            # 2. Kontrola, zda scraper našel to, co hledal (ochrana proti změně HTML webu)
+            targets = {"USD": "USD", "GBP": "GBP"}
+
+            # Projdeme všechny tabulky na stránce
+            for table in soup.find_all('table'):
+                for row in table.find_all('tr'):
+                    cells = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
+                    if not cells: continue
+                    
+                    row_str = " ".join(cells).upper()
+                    
+                    for symbol, code in targets.items():
+                        # Pokud v řádku vidíme kód měny
+                        if code in row_str:
+                            # Projdeme buňky a hledáme kurz (číslo s 3 des. místy)
+                            for cell in cells:
+                                # Regex hledá formát: aspoň jedna cifra, čárka/tečka a přesně tři cifry
+                                match = re.search(r'(\d+[\,\.]\d{3})', cell)
+                                if match:
+                                    val = float(match.group(1).replace(',', '.'))
+                                    # Pojistka: jednotný kurz je vždy nad 10 Kč (vyloučí roky a jednotky)
+                                    if val > 10: 
+                                        rates_found[symbol] = val
+
+            # Pokud máme oba kurzy, zapíšeme je
             if "USD" in rates_found and "GBP" in rates_found:
-                self.uniform_rates[year] = rates_found
+                self.uniform_rates[str(year)] = rates_found
                 self.save_data()
             else:
-                raise ValueError("Kurzy pro USD/GBP nebyly na stránce kurzy.cz nalezeny (struktura webu se pravděpodobně změnila).")
-                
+                missing = [k for k in ["USD", "GBP"] if k not in rates_found]
+                raise ValueError(f"Chybějící data pro: {', '.join(missing)}")
+
         except Exception as e:
-            # Sestavení zprávy s detailem chyby
+            # Upozornění uživatele (bezpečně přes hlavní vlákno)
             err_msg = (
-                f"Nepodařilo se stáhnout Jednotné kurzy ČNB pro rok {year}.\n\n"
-                f"Detail chyby: {str(e)}\n\n"
-                "Aplikace při exportu daní použije odhadovaný kurz z aktuálního trhu, dokud nebude chyba vyřešena."
+                f"Chyba při stahování Jednotných kurzů pro rok {year}:\n{str(e)}\n\n"
+                "Aplikace použije odhadované tržní kurzy."
             )
-            # BEZPEČNÉ vyvolání messageboxu přes hlavní vlákno UI
             self.root.after(0, lambda: messagebox.showwarning("Upozornění scraperu", err_msg))
 
     def get_fx_rates(self):
