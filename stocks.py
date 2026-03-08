@@ -2925,7 +2925,7 @@ class CzechInvestorApp:
                     loss_warning = "<br/><i>Poznámka: Dosáhl jste celkové ztráty. V přiznání se příjmy a výdaje vyrovnají - daňový základ bude 0 Kč. Ztrátu z akcií nelze odečíst od jiných typů příjmů (např. ze zaměstnání).</i>"
 
                 instrukce = f"""<b>NÁVOD PRO RUČNÍ VYPLNĚNÍ (§10):</b><br/>
-                V přiznání přejděte na <b>Přílohu č. 2</b>. V tabulce č. 2 zvolte Druh příjmu <b>"F - Jiný druh"</b> (Prodej cenných papírů).<br/>
+                V přiznání přejděte na <b>Přílohu č. 2</b>. V tabulce č. 2 zvolte Druh příjmu <b>"D - Prodej cenných papírů"</b>.<br/>
                 • Do sloupce Příjmy zadejte: <b>{totals['p10_income']:,.0f} Kč</b><br/>
                 • Do sloupce Výdaje zadejte: <b>{vydaje_txt} Kč</b><br/>
                 • Daňový základ (Zisk) bude: <b>{zaklad_txt} Kč</b>{loss_warning}"""
