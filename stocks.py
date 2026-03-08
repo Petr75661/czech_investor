@@ -227,7 +227,7 @@ def _worker_simulation_task(n_sims, active_indices, fixed_weights, target_sum,
     fut_crisis_drop = (fut_growths - 1.645 * batch_vol) * 100
     fut_crisis_drop = np.minimum(fut_crisis_drop, 0.0) # Zarovnáme na nulu, propad nesmí být kladný
     
-    metrics_chunk = np.column_stack((div_income_czk, max_dds, port_growths, fut_div_czk, fut_crisis_drop, fut_growths * 100))
+    metrics_chunk = np.column_stack((div_income_czk, max_dds, port_growths, fut_div_czk, fut_crisis_drop, fut_growths * 100, batch_vol * 100))
     return weights_chunk, metrics_chunk
 
 
@@ -431,7 +431,7 @@ class CzechInvestorApp:
         self.sell_price_entry.delete(0, tk.END)
         self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
 
-    def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=4):
+    def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=4, auto_adjust=True):
         """Robustní stahovač s ochranou proti vnitřním chybám yfinance (NoneType error)."""
         import time
         import random
@@ -448,8 +448,7 @@ class CzechInvestorApp:
             try:
                 # 1. HLAVNÍ STAŽENÍ
                 data = yf.download(expected_tickers, period=period, interval=interval, 
-                                   progress=False, auto_adjust=True, actions=False, threads=False)
-                
+                                   progress=False, auto_adjust=auto_adjust, actions=False, threads=False)                
                 # Ochrana proti vnitřní chybě yfinance, kdy download vrátí None nebo prázdno
                 if data is None or data.empty or 'Close' not in data:
                     raise ValueError("Yahoo Finance nevrátil validní data.")
@@ -479,8 +478,8 @@ class CzechInvestorApp:
                             start_c = (check_date_real - timedelta(days=5)).strftime('%Y-%m-%d')
                             end_c = (check_date_real + timedelta(days=5)).strftime('%Y-%m-%d')
                             
-                            check_data = yf.download(stocks_only, start=start_c, end=end_c, 
-                                                     progress=False, auto_adjust=True, actions=False, threads=False)
+                            check_data = yf.download(stocks_only, start=start_c, end=end_c,
+                                                     progress=False, auto_adjust=auto_adjust, actions=False, threads=False)
                             
                             if check_data is not None and not check_data.empty and 'Close' in check_data:
                                 c_close = check_data['Close']
@@ -1081,7 +1080,11 @@ class CzechInvestorApp:
 
     def update_lots_view(self):
         self.lots_tree.delete(*self.lots_tree.get_children())
-        three_years_ago = datetime.now() - timedelta(days=1095)
+        now = datetime.now()
+        try:
+            three_years_ago = now.replace(year=now.year - 3)
+        except ValueError:
+            three_years_ago = now.replace(year=now.year - 3, day=28)
         
         for t in TARGETS.keys():
             lots = self.ledger.get(t,[])
@@ -1091,7 +1094,7 @@ class CzechInvestorApp:
                 
             for lot in lots:
                 try:
-                    s = "OSVOBOZENO" if datetime.strptime(lot['date'], "%Y-%m-%d") < three_years_ago else "ZDANITELNÉ"
+                    s = "OSVOBOZENO" if datetime.strptime(lot['date'], "%Y-%m-%d") <= three_years_ago else "ZDANITELNÉ"
                     qty_str = str(round(lot['qty'], 3)).replace('.', ',')
                     price_str = str(lot.get('price_at_buy', 'N/A')).replace('.', ',')
                     self.lots_tree.insert("", "end", values=(t, lot['date'], qty_str, price_str, s))
@@ -1952,22 +1955,22 @@ class CzechInvestorApp:
                 new_m = np.vstack(m_chunks)
                 
                 if auto_improve:
-                    # 1. Žádná z 6 metrik nesmí být horší (přidána mikroskopická tolerance na nepřesnost Floatů)
-                    eps = 1e-5
-                    mask = np.all(new_m >= best_m - eps, axis=1)
+                    # 1. Žádná z prvních 6 metrik nesmí být horší (přidána mikroskopická tolerance na nepřesnost Floatů)
+                    eps_tol = 1e-5
+                    mask = np.all(new_m[:, :6] >= best_m[:6] - eps_tol, axis=1)
                     
                     # 2. Alespoň jedna z 6 metrik musí být prokazatelně lepší 
                     # Definice prahů:[Div: 1 Kč, DD: 0.01 %, Růst: 0.01 %, Bezpečná div: 1 Kč, Krizový DD: 0.01 %, Cílový růst: 0.01 %]
                     thresholds = np.array([1.0, 0.01, 0.01, 1.0, 0.01, 0.01])
-                    strict_mask = np.any(new_m >= best_m + thresholds, axis=1)
+                    strict_mask = np.any(new_m[:, :6] >= best_m[:6] + thresholds, axis=1)
                     
                     valid_indices = np.where(mask & strict_mask)[0]
                     
                     if len(valid_indices) > 0:
-                        # Vybereme tu kombinaci, která maximalizuje součet zlepšení napříč metrikami
-                        rngs = np.ptp(new_m, axis=0)
+                        # Vybereme tu kombinaci, která maximalizuje součet zlepšení napříč těmito 6 metrikami
+                        rngs = np.ptp(new_m[:, :6], axis=0)
                         rngs[rngs == 0] = 1.0
-                        diffs = new_m[valid_indices] - best_m
+                        diffs = new_m[valid_indices, :6] - best_m[:6]
                         norm_diffs = diffs / rngs
                         scores = np.sum(norm_diffs, axis=1)
                         best_local_idx = valid_indices[np.argmax(scores)]
@@ -2140,12 +2143,16 @@ class CzechInvestorApp:
                                          ha='center', color='#E65100', fontsize=11, fontweight='bold')
         
         # --- HLAVNÍ GRAF: HISTORIE + PREDIKCE ---
-        norm_prices = self.tuner_hist_prices / self.tuner_hist_prices.iloc[0]
-        curve_to_plot = norm_prices.dot(plot_weights) * 100000
+        
+        # Výpočet reálného denního výkonu udržovaného portfolia (Constant Weights)
+        daily_pct_changes = self.tuner_hist_prices.pct_change().fillna(0)
+        daily_portfolio_returns = daily_pct_changes.dot(plot_weights)
+        cumulative_growth = (1 + daily_portfolio_returns).cumprod()
+        curve_to_plot = cumulative_growth * 100000
         
         # 1. Kreslení S&P 500 (včetně jeho budoucího driftu)
         if hasattr(self, 'tuner_spy_prices') and not self.tuner_spy_prices.empty:
-            spy_aligned = self.tuner_spy_prices.reindex(norm_prices.index).ffill().bfill()
+            spy_aligned = self.tuner_spy_prices.reindex(daily_pct_changes.index).ffill().bfill()
             curve_spy = (spy_aligned / spy_aligned.iloc[0]) * 100000
             self.ax_curve.plot(curve_spy.index, curve_spy.values, color='#D32F2F', linestyle=':', linewidth=1.5, label='S&P 500 (SPY)', alpha=0.7)
             
@@ -2161,23 +2168,20 @@ class CzechInvestorApp:
 
         # 2. Kreslení Baseline (pokud jsme v Tuned módu, dáme ji na pozadí)
         if view_mode == "new":
-            curve_base = norm_prices.dot(base_w) * 100000
+            base_daily_rets = daily_pct_changes.dot(base_w)
+            curve_base = (1 + base_daily_rets).cumprod() * 100000
             self.ax_curve.plot(curve_base.index, curve_base.values, color='grey', linestyle='--', label='Aktuální (base)', alpha=0.6)
 
         # 3. Kreslení Aktivní křivky (Base nebo Tuned)
         self.ax_curve.plot(curve_to_plot.index, curve_to_plot.values, color=main_color, linewidth=2, label=f'Portfolio {pie_title_suffix} (hrubé)')
         
         # --- VÝPOČET A KRESLENÍ ZDANĚNÉ KŘIVKY (15% daň z dividend) ---
-        # Zjistíme dividendový výnos pro aktuálně vykreslované váhy
         current_weights_div_yield = np.dot(plot_weights, self.tuner_stock_divs)
         tax_drag_annual = current_weights_div_yield * 0.15
+        daily_tax_drag = tax_drag_annual / 252.0
         
-        # Výpočet času od začátku simulace pro každý bod
-        days_from_start = (curve_to_plot.index - curve_to_plot.index[0]).days
-        years_from_start = days_from_start / 365.25
-        
-        # Aplikace daňové brzdy na celkový výnos
-        curve_net = curve_to_plot * ((1 - tax_drag_annual) ** years_from_start)
+        daily_net_returns = daily_portfolio_returns - daily_tax_drag
+        curve_net = (1 + daily_net_returns).cumprod() * 100000
         
         self.ax_curve.plot(curve_net.index, curve_net.values, color='#81D4FA', linestyle='-', linewidth=1.5, label=f'Portfolio {pie_title_suffix} (zdaněné)')
         
@@ -2206,9 +2210,15 @@ class CzechInvestorApp:
 
         # --- BAR CHART ---
         years = sorted(list(set(self.tuner_hist_prices.index.year)))
-        bars_base, bars_new, lbls = [], [], []
-        curve_base_all = norm_prices.dot(base_w) * 100000
-        curve_new_all = norm_prices.dot(new_weights) * 100000
+        bars_base, bars_new, lbls = [], [],[]
+        
+        # Musíme si vygenerovat Base křivku i pro Tuned režim, aby se dalo kreslit srovnání
+        base_daily_rets_all = daily_pct_changes.dot(base_w)
+        curve_base_all = (1 + base_daily_rets_all).cumprod() * 100000
+        
+        # New_weights křivka vychází z nového portfolia
+        new_daily_rets_all = daily_pct_changes.dot(new_weights)
+        curve_new_all = (1 + new_daily_rets_all).cumprod() * 100000
         
         for y in years:
             sb = curve_base_all[curve_base_all.index.year == y]
@@ -2217,7 +2227,7 @@ class CzechInvestorApp:
                 bars_base.append(sb.iloc[-1] - sb.iloc[0])
                 bars_new.append(sn.iloc[-1] - sn.iloc[0])
                 lbls.append(str(y))
-        
+
         x = np.arange(len(lbls)); width = 0.35
         if view_mode == "base":
             self.ax_bars.bar(x, bars_base, width*2, label='Base (total return)', color='grey')
@@ -2301,7 +2311,7 @@ class CzechInvestorApp:
             
             try:
                 fx = self.get_fx_rates()
-                downloaded = self._safe_yf_download(all_tickers, period="5y")
+                downloaded = self._safe_yf_download(all_tickers, period="5y", auto_adjust=True)
                 
                 if downloaded.empty or 'Close' not in downloaded:
                     self.root.after(0, lambda: messagebox.showerror("Chyba stahování", "Data pro statistiky jsou nedostupná. Zkontrolujte internet."))
@@ -2366,7 +2376,7 @@ class CzechInvestorApp:
                 else:
                     self.ax1.plot(curve.index, curve.values, color='grey', linestyle='--', alpha=0.6, label="Simulace")
                     
-                self.ax1.set_title("Vývoj hodnoty portfolia (Simulace vs. Realita)")
+                self.ax1.set_title("Vývoj hodnoty portfolia při reinvestici dividend (simulace a realita)")
                 self.ax1.grid(True, linestyle='--', alpha=0.5)
                 self.ax1.legend()
                 self.ax1.set_ylabel("Hodnota [Kč]")
@@ -2427,18 +2437,23 @@ class CzechInvestorApp:
                         year_divs += t_div
                         div_history[t].append(t_div) 
 
+                    # total_pnl je přesný Total Return vč. reinvestic (protože používáme upravené ceny).
+                    # growth_only je vizuální "zbytek", aby se po nasčítání se žlutým sloupcem 
+                    # trefila přesná výška Total Returnu.
                     if not has_buys or y < first_buy_year:
-                        total_pnl = (val_end - val_start) + year_divs
-                        growth_only = val_end - val_start
-                        colors.append('lightgrey')
+                        total_pnl = val_end - val_start
+                        growth_only = total_pnl - year_divs
+                        colors.append('grey')
                         base = val_start if val_start > 0 else (val_end / 1.1)
+                        
                     elif y == first_buy_year:
-                        total_pnl = (val_end + sales_income + year_divs) - buys_cost
+                        total_pnl = (val_end + sales_income) - buys_cost
                         growth_only = total_pnl - year_divs
                         colors.append('#4CAF50' if total_pnl >= 0 else '#E53935')
                         base = buys_cost
+                        
                     else:
-                        total_pnl = (val_end + sales_income + year_divs) - (val_start + buys_cost)
+                        total_pnl = (val_end + sales_income) - (val_start + buys_cost)
                         growth_only = total_pnl - year_divs
                         colors.append('#4CAF50' if total_pnl >= 0 else '#E53935')
                         base = val_start
@@ -2452,25 +2467,69 @@ class CzechInvestorApp:
                     labels.append(lbl_text)
 
                 self.ax2.clear()
-                # Znovu nasadíme formatter i pro sloupcový graf (aby nebyl 1e6 u ztrát)
                 self.ax2.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
                 
                 x = np.arange(len(growth_vals))
                 
-                # Pro skládaný graf zajistíme, že pokud je růst ceny záporný (ztráta), 
-                # dividenda se nevykreslí do mínusu, ale normálně od nuly nahoru.
-                growth_arr = np.array(growth_vals)
-                div_bottoms = np.where(growth_arr > 0, growth_arr, 0)
-                
-                self.ax2.bar(x, growth_vals, label='Růst ceny', color=colors)
-                self.ax2.bar(x, div_vals, bottom=div_bottoms, label='Dividendy', color='#FFC107')                
+                # ZDE ZAČÍNÁ NOVÁ LOGIKA VYKRESLOVÁNÍ SLOUPCŮ
+                for i in range(len(x)):
+                    g = growth_vals[i]  # Růst / Ztráta ceny
+                    d = div_vals[i]     # Hodnota dividend
+                    t = totals[i]       # Total Return (g + d)
+                    c_base = colors[i]  # Základní barva z předchozí logiky (zelená/šedá/červená)
+                    
+                    if g >= 0:
+                        # STANDARDNÍ RŮST (Vše je v plusu)
+                        self.ax2.bar(x[i], g, color=c_base, label='Růst ceny' if i==0 else "")
+                        if d > 0:
+                            self.ax2.bar(x[i], d, bottom=g, color='#FFC107', label='Dividendy' if i==0 else "")
+                            
+                    else:
+                        # POKLES CENY AKCIÍ
+                        if t < 0:
+                            # 1) SCÉNÁŘ: Pokles je větší než dividenda (Total je záporný)
+                            # Světlejší část ukazuje celkovou výslednou ztrátu
+                            # Tmavší část ukazuje ztrátu, kterou smazala dividenda
+                            
+                            # Odvození tmavší/světlejší barvy podle toho, zda je sloupec Reálný (červený) nebo Simulace (šedý)
+                            if c_base == '#E53935': # Červená
+                                light_c = '#EF9A9A' # Světle červená
+                                dark_c = '#C62828'  # Tmavě červená
+                            else: # Šedá
+                                light_c = 'lightgrey'
+                                dark_c = 'grey'
+                                
+                            # Vykreslení:
+                            # Horní díl (k Total Returnu)
+                            self.ax2.bar(x[i], t, color=light_c, label='Výsledná ztráta' if i==0 else "")
+                            # Spodní díl (vykrytý dividendou)
+                            if d > 0:
+                                self.ax2.bar(x[i], -d, bottom=t, color=dark_c, label='Ztráta pokrytá div.' if i==0 else "")
+                                
+                        else:
+                            # 2) SCÉNÁŘ: Pokles ceny, ale Dividenda zachránila rok do Plusu
+                            # Šedý/Červený sloupec zůstává ukotven na nule a jde do mínusu
+                            self.ax2.bar(x[i], g, color=c_base, label='Ztráta ceny' if i==0 else "")
+                            
+                            # Žlutá dividenda se rozdělí na Čistý zisk (tmavá) a Kompenzaci (světlá)
+                            if d > 0:
+                                # Tmavě žlutá (Oranžová) = Skutečný čistý zisk
+                                self.ax2.bar(x[i], t, color='#FFA000', label='Čistý zisk z div.' if i==0 else "")
+                                # Světle žlutá = Část dividendy, která padla na zalepení díry
+                                self.ax2.bar(x[i], abs(g), bottom=t, color='#FFD54F', label='Div. kryjící ztrátu' if i==0 else "")
+
                 self.ax2.grid(True, linestyle='--', alpha=0.5)
                 self.ax2.set_ylabel("Zisk [Kč]")
                 
-                legend_elements =[Patch(facecolor='lightgrey', label='Simulace'), 
-                                   Patch(facecolor='#4CAF50', label='Reálný zisk'),
-                                   Patch(facecolor='#FFC107', label='Dividendy')]
-                self.ax2.legend(handles=legend_elements, loc="lower left")
+                # Zjednodušení legendy, aby v ní nebylo milion položek z cyklu výše
+                legend_elements =[
+                    Patch(facecolor='grey', label='Simulace (růst/ztráta)'), 
+                    Patch(facecolor='#4CAF50', label='Reálný zisk'),
+                    Patch(facecolor='#E53935', label='Reálná ztráta'),
+                    Patch(facecolor='#FFC107', label='Dividendy'),
+                    Patch(facecolor='#FFA000', label='Čistý zisk (když div. porazí ztrátu)')
+                ]
+                self.ax2.legend(handles=legend_elements, loc="lower left", fontsize=9)
                 
                 v_min, v_max = min(min(growth_vals), min(totals), 0), max(max(totals), max(growth_vals), 0)
                 y_range = max(v_max - v_min, 2000)
@@ -2672,7 +2731,7 @@ class CzechInvestorApp:
         if totals['p10_income'] > 100000:
             p_ost = int(math.floor(totals["p10_income"]))
             v_ost = int(math.ceil(totals["p10_expense"]))
-            xml.append(f'    <VetaO druh_prij="F" prijem_ost="{p_ost}" vydaj_ost="{v_ost}"/>')
+            xml.append(f'    <VetaO druh_prij="D" prijem_ost="{p_ost}" vydaj_ost="{v_ost}"/>')
 
         # Rozdělení dividend v XML podle skutečné země
         # V této metodě už máme totals, ale pokud chceme XML naprosto přesné, 
