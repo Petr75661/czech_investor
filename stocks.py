@@ -154,7 +154,7 @@ EPS = 0.001
 ENFORCEMENT_W = 0.5  # Důraz na trefení čísla na slideru
 STABILITY_W = 0.5    # Důraz na minimální změnu existujících vah
 MC_NO = 200000       # Počet simulovaných portfolií (musí být větší než 20000)
-MC_NO_IMPR = 200000  # Počet simulovaných portfolií při vylepšování
+MC_NO_IMPR = 500000  # Počet simulovaných portfolií při vylepšování
 MAX_DIV_SHARE = 0.23 # Maximální tolerovaný podíl jedné akcii v celkovém úhrnu dividend
 DIV_YIELD_DROP = 0.5 # Očekávaný poměr změny dividend u akcií, které vyplácejí více než 90% zisku
 DIV_WARN_FRACTION = 0.03 # Od jakého podílu jednoho zdroje dividend se zobrazí varování
@@ -1612,7 +1612,7 @@ class CzechInvestorApp:
         self.btn_apply_weights.pack(pady=10, fill=tk.X)
 
         # Tabulka Base portfolia (zmenšená)
-        base_frame = tk.LabelFrame(control_panel, text="Aktuální (Base)", bg="#FFF8E1", font=("Arial", 12, "bold"))
+        base_frame = tk.LabelFrame(control_panel, text="Aktuální (base)", bg="#FFF8E1", font=("Arial", 12, "bold"))
         base_frame.pack(fill=tk.X)
         
         tk.Label(base_frame, text="Hrubá div:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=0, sticky="w")
@@ -1952,13 +1952,14 @@ class CzechInvestorApp:
                 new_m = np.vstack(m_chunks)
                 
                 if auto_improve:
-                    # 1. Žádná metrika nesmí být horší (přidána mikroskopická tolerance na nepřesnost Floatů)
+                    # 1. Žádná z 6 metrik nesmí být horší (přidána mikroskopická tolerance na nepřesnost Floatů)
                     eps = 1e-5
-                    mask = (new_m[:,0] >= best_m[0] - eps) & (new_m[:,1] >= best_m[1] - eps) & (new_m[:,2] >= best_m[2] - eps)
+                    mask = np.all(new_m >= best_m - eps, axis=1)
                     
-                    # 2. Alespoň jedna metrika musí být prokazatelně lepší 
-                    # (Dividenda o 1 Kč, nebo Drawdown o 0.01 %, nebo Růst o 0.01 %)
-                    strict_mask = (new_m[:,0] >= best_m[0] + 1.0) | (new_m[:,1] >= best_m[1] + 0.01) | (new_m[:,2] >= best_m[2] + 0.01)
+                    # 2. Alespoň jedna z 6 metrik musí být prokazatelně lepší 
+                    # Definice prahů:[Div: 1 Kč, DD: 0.01 %, Růst: 0.01 %, Bezpečná div: 1 Kč, Krizový DD: 0.01 %, Cílový růst: 0.01 %]
+                    thresholds = np.array([1.0, 0.01, 0.01, 1.0, 0.01, 0.01])
+                    strict_mask = np.any(new_m >= best_m + thresholds, axis=1)
                     
                     valid_indices = np.where(mask & strict_mask)[0]
                     
