@@ -342,22 +342,39 @@ class CzechInvestorApp:
         url = f"https://www.kurzy.cz/kurzy-men/jednotny-kurz/{year}/"
         try:
             resp = requests.get(url, timeout=5)
-            if resp.status_code != 200: return
+            # 1. Kontrola, zda server vůbec odpověděl správně
+            if resp.status_code != 200: 
+                raise ConnectionError(f"Server vrátil chybový kód: {resp.status_code}")
+                
             soup = BeautifulSoup(resp.text, 'html.parser')
             rates_found = {}
             for row in soup.find_all('tr'):
                 text = row.get_text()
                 if "Americký dolar" in text or "USD" in text:
                     cols = row.find_all('td')
-                    if len(cols) >= 3: rates_found["USD"] = float(cols[-1].get_text().strip().replace(',', '.'))
+                    if len(cols) >= 3: 
+                        rates_found["USD"] = float(cols[-1].get_text().strip().replace(',', '.'))
                 if "Britská libra" in text or "GBP" in text:
                     cols = row.find_all('td')
-                    if len(cols) >= 3: rates_found["GBP"] = float(cols[-1].get_text().strip().replace(',', '.'))
+                    if len(cols) >= 3: 
+                        rates_found["GBP"] = float(cols[-1].get_text().strip().replace(',', '.'))
             
+            # 2. Kontrola, zda scraper našel to, co hledal (ochrana proti změně HTML webu)
             if "USD" in rates_found and "GBP" in rates_found:
                 self.uniform_rates[year] = rates_found
                 self.save_data()
-        except: pass
+            else:
+                raise ValueError("Kurzy pro USD/GBP nebyly na stránce kurzy.cz nalezeny (struktura webu se pravděpodobně změnila).")
+                
+        except Exception as e:
+            # Sestavení zprávy s detailem chyby
+            err_msg = (
+                f"Nepodařilo se stáhnout Jednotné kurzy ČNB pro rok {year}.\n\n"
+                f"Detail chyby: {str(e)}\n\n"
+                "Aplikace při exportu daní použije odhadovaný kurz z aktuálního trhu, dokud nebude chyba vyřešena."
+            )
+            # BEZPEČNÉ vyvolání messageboxu přes hlavní vlákno UI
+            self.root.after(0, lambda: messagebox.showwarning("Upozornění scraperu", err_msg))
 
     def get_fx_rates(self):
         try:
