@@ -2937,10 +2937,11 @@ class CzechInvestorApp:
         
         elements.append(Spacer(1, 1*cm))
 
-        elements.append(Paragraph("2. Dividendy ze zahraničí (§8 Samostatný základ daně)", style_h2))
-        elements.append(Paragraph("Dividendy ze zahraničí se přiznávají v Příloze pro Samostatný základ daně (§ 16a). Přiznávají se rozdělené podle jednotlivých států.", style_norm))
+        elements.append(Paragraph("2. Dividendy ze zahraničí (§16a Samostatný základ daně)", style_h2))
+        elements.append(Paragraph("Dividendy ze zahraničí se daní v Příloze č. 4 (Samostatný základ daně). Na rozdíl od starších pravidel se zde nevyplňují samostatné listy pro každý stát, ale zahraniční dividendy a zápočty se sčítají do jedné celkové tabulky.", style_norm))
         elements.append(Spacer(1, 0.5*cm))
 
+        # Ponecháme rozpis pro vizuální kontrolu investora
         if div_data.get("USA"):
             elements.append(Paragraph(f"<b>A) Dividendy ze Spojených států (USA)</b>", style_bold))
             table_data = [["Datum", "Ticker", "Hrubá Div (CZK)", "Zahraniční daň (15%)"]]
@@ -2950,15 +2951,6 @@ class CzechInvestorApp:
             t.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.lightgrey), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('FONTNAME', (0,0), (-1,-1), font_name), ('FONTSIZE', (0,0), (-1,-1), 11), ('GRID', (0,0), (-1,-1), 0.5, colors.grey)]))
             elements.append(t)
             elements.append(Spacer(1, 0.3*cm))
-            
-            instrukce_usa = f"""<b>NÁVOD PRO RUČNÍ VYPLNĚNÍ (USA):</b><br/>
-            USA vám již dividendu zdanily 15 %. V ČR využijete metodu prostého zápočtu, čímž se vaše česká daň vynuluje.<br/>
-            V Příloze pro Samostatný základ daně ze zahraničí založte nový stát:<br/>
-            • Kód státu: <b>Spojené státy (US)</b><br/>
-            • Příjmy (řádek 401): <b>{totals['div_usa_gross']:,.0f} Kč</b><br/>
-            • Daň zaplacená v zahraničí (řádek 403): <b>{totals['div_usa_withheld']:,.0f} Kč</b><br/>
-            • K doplacení v ČR z USA: <b>0 Kč</b>"""
-            draw_info_box(instrukce_usa.replace(",", " "), colors.HexColor("#E3F2FD"), colors.HexColor("#1565C0"))
         
         if div_data.get("UK"):
             elements.append(Paragraph(f"<b>B) Dividendy z Velké Británie (UK)</b>", style_bold))
@@ -2969,15 +2961,32 @@ class CzechInvestorApp:
             t.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.lightgrey), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('FONTNAME', (0,0), (-1,-1), font_name), ('FONTSIZE', (0,0), (-1,-1), 11), ('GRID', (0,0), (-1,-1), 0.5, colors.grey)]))
             elements.append(t)
             elements.append(Spacer(1, 0.3*cm))
+
+        if not div_data.get("USA") and not div_data.get("UK"):
+            elements.append(Paragraph("V tomto roce nebyly přijaty žádné dividendy.", style_norm))
+        else:
+            # Výpočet celkových částek pro jedinou tabulku Přílohy 4
+            total_div = totals['div_usa_gross'] + totals['div_uk_gross']
+            total_foreign_tax = totals['div_usa_withheld']  # UK daň je 0
             
-            instrukce_uk = f"""<b>NÁVOD PRO RUČNÍ VYPLNĚNÍ (Velká Británie):</b><br/>
-            POZOR: Británie cizincům dividendy nezdaňuje. Vyplaceno vám bylo 100 %. Těchto 15 % musíte nyní odvést České republice.<br/>
-            V Příloze pro Samostatný základ daně ze zahraničí založte nový stát:<br/>
-            • Kód státu: <b>Velká Británie (GB)</b><br/>
-            • Příjmy (řádek 401): <b>{totals['div_uk_gross']:,.0f} Kč</b><br/>
-            • Daň zaplacená v zahraničí (řádek 403): <b>0 Kč</b><br/>
-            • K doplacení v ČR (15%): <b>{totals['div_uk_owed']:,.0f} Kč</b> (Toto bude přičteno k vaší daňové povinnosti)."""
-            draw_info_box(instrukce_uk.replace(",", " "), colors.HexColor("#FFEBEE"), colors.HexColor("#C62828"))
+            # Daň uznaná k zápočtu (nemůže přesáhnout teoretickou českou 15% daň)
+            total_recognized = min(total_foreign_tax, total_div * 0.15)
+            
+            # Výsledná daň k zaplacení v ČR
+            tax_to_pay = max(0, (total_div * 0.15) - total_recognized)
+
+            instrukce_p4 = f"""<b>NÁVOD PRO RUČNÍ VYPLNĚNÍ (Příloha č. 4):</b><br/>
+            V papírovém formuláři (Příloha č. 4) nehledejte kolonky pro kódy států. Všechny dividendy se sečtou a zapíší jako jeden celek.<br/><br/>
+            • Řádek 401a (Příjmy podle § 8 ze zahraničí): <b>{total_div:,.0f} Kč</b><br/>
+            • Řádek 406 a 409 (Součty základů daně): <b>{total_div:,.0f} Kč</b><br/>
+            • Řádek 410 (15% teoretická daň): <b>{total_div * 0.15:,.0f} Kč</b><br/>
+            • Řádek 411 (Příjmy, u nichž se uplatní zápočet): <b>{total_div:,.0f} Kč</b><br/>
+            • Řádek 412 (Daň zaplacená v zahraničí): <b>{total_foreign_tax:,.0f} Kč</b><br/>
+            • Řádek 413 (Daň uznaná k zápočtu): <b>{total_recognized:,.0f} Kč</b><br/>
+            • Řádek 414 (Daň ze samostatného základu): <b>{tax_to_pay:,.0f} Kč</b><br/><br/>
+            <i>Hodnota z řádku 414 se následně přenese do Hlavního daňového přiznání na řádek 74a (ve 3. oddílu).</i>"""
+            
+            draw_info_box(instrukce_p4.replace(",", " "), colors.HexColor("#E3F2FD"), colors.HexColor("#1565C0"))
 
         if not div_data.get("USA") and not div_data.get("UK"):
             elements.append(Paragraph("V tomto roce nebyly přijaty žádné dividendy.", style_norm))
