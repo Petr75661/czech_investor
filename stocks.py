@@ -2082,7 +2082,8 @@ class CzechInvestorApp:
             elif port_vol < 22.0: risk_word, r_color = "Vyšší (dynamické)", "#E65100"
             else: risk_word, r_color = "Vysoké (agresivní)", "#C62828"
                 
-            self.lbl_risk_text.config(text=f"{risk_word} ({port_vol:.1f} % p.a.)".replace('.', ','), fg=r_color)
+            vol_str = f"{port_vol:.1f}".replace('.', ',')
+            self.lbl_risk_text.config(text=f"{risk_word} ({vol_str} % p.a.)", fg=r_color)
             self.risk_progress['value'] = min(port_vol, 30.0)
                 
         # Samotné překreslení grafů delegujeme na metodu, která přečte stav přepínačů
