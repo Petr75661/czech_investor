@@ -2345,27 +2345,44 @@ class CzechInvestorApp:
                     first_buy_dt = None
                     first_buy_year = 9999
 
-                curve = pd.Series(0.0, index=hist_prices.index)
-                for date_idx in hist_prices.index:
-                    daily_val = 0
-                    
-                    if not has_buys or date_idx < first_buy_dt:
-                        for t in all_tickers:
-                            qty = sum(l['qty'] for l in ledger_dt.get(t,[]))
-                            qty += sum(s['qty'] for s in sales_dt if s['ticker'] == t)
-                            if qty > 0 and t in hist_prices.columns:
-                                p = hist_prices.at[date_idx, t] / (100.0 if t.endswith(".L") else 1.0)
-                                daily_val += (p * qty * fx.get(self.get_currency_for_ticker(t), 23.0))
-                    else:
-                        for t in all_tickers:
-                            q_held = sum(l['qty'] for l in ledger_dt.get(t, []) if l['date'] <= date_idx)
-                            q_sold_later = sum(s['qty'] for s in sales_dt if s['ticker'] == t 
-                                                 and s['buy_date'] <= date_idx and s['sell_date'] > date_idx)
-                            total_qty = q_held + q_sold_later
-                            if total_qty > 0 and t in hist_prices.columns:
-                                p = hist_prices.at[date_idx, t] / (100.0 if t.endswith(".L") else 1.0)
-                                daily_val += (p * total_qty * fx.get(self.get_currency_for_ticker(t), 23.0))
-                    curve.at[date_idx] = daily_val
+                # 1. Zjistíme aktuální hodnotu každé pozice v CZK pro výpočet reálných vah
+                current_values_czk = {}
+                total_portfolio_now = 0.0
+                last_prices = hist_prices.iloc[-1]
+                
+                for t in all_tickers:
+                    qty_now = sum(l['qty'] for l in self.ledger.get(t, []))
+                    if qty_now > 0 and t in hist_prices.columns:
+                        p = last_prices[t] / (100.0 if t.endswith(".L") else 1.0)
+                        val = p * qty_now * fx.get(self.get_currency_for_ticker(t), 23.0)
+                        current_values_czk[t] = val
+                        total_portfolio_now += val
+                
+                # 2. Vypočítáme aktuální procentuální váhy (actual weights)
+                actual_weights = {}
+                if total_portfolio_now > 0:
+                    actual_weights = {t: val / total_portfolio_now for t, val in current_values_czk.items()}
+                else:
+                    # Pokud je portfolio prázdné, použijeme TARGETS jako fallback
+                    actual_weights = {t: w for t, w in TARGETS.items()}
+                    total_portfolio_now = 100000.0 # Fallback pro prázdné portfolio
+
+                # 3. Vygenerujeme normalizovanou Constant Mix křivku (denní rebalancing)
+                daily_pct_changes = hist_prices.pct_change().fillna(0)
+                
+                # Srovnáme váhy do vektoru odpovídajícímu sloupcům v hist_prices
+                w_vector = np.array([actual_weights.get(col, 0.0) for col in hist_prices.columns])
+                
+                # Výpočet denních výnosů portfolia
+                portfolio_daily_returns = daily_pct_changes.dot(w_vector)
+                
+                # Kumulativní křivka končící v bodě 1.0
+                norm_curve = (1 + portfolio_daily_returns).cumprod()
+                
+                # 4. Škálování: Křivka musí končit přesně na dnešní hodnotě majetku
+                # Tím získáme startovní kapitál, který bychom museli mít před 5 lety.
+                scaling_factor = total_portfolio_now / norm_curve.iloc[-1]
+                curve = norm_curve * scaling_factor
 
                 self.ax1.clear()
                 
