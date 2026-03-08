@@ -2774,33 +2774,83 @@ class CzechInvestorApp:
             self.status_lbl.config(text="Hotovo", fg="green")
 
     def create_xml(self, filename, totals, year):
-        """Vygeneruje strojově čitelný .xml soubor pro rychlý import do portálu MojeDaně."""
-        current_year = datetime.now().year # rok pro metadata XML
+        """Vygeneruje strojově čitelný .xml soubor pro rychlý import do portálu MojeDaně (formát DPFDP7)."""
+        current_year = datetime.now().year
+        
+        # Od roku 2024 používá finanční správa formát DPFDP7
+        root_tag = "DPFDP7" if year >= 2024 else "DPFDP6"
         
         xml =[
             '<?xml version="1.0" encoding="UTF-8"?>',
             f'<Pisemnost nazevSW="Czech Investor App" verzeSW="{current_year}">',
-            '  <DPFDP5>',
-            f'    <VetaD rok="{year}" d_poddp="1"/>',
-            '    <VetaP jmeno="" prijmeni=""/>'
+            f'  <{root_tag}>'
         ]
 
-        if totals['p10_income'] > 100000:
-            p_ost = int(math.floor(totals["p10_income"]))
-            v_ost = int(math.ceil(totals["p10_expense"]))
-            xml.append(f'    <VetaO druh_prij="D" prijem_ost="{p_ost}" vydaj_ost="{v_ost}"/>')
-
-        # Rozdělení dividend v XML podle skutečné země
-        # V této metodě už máme totals, ale pokud chceme XML naprosto přesné, 
-        # portál finanční správy vyžaduje součty za jednotlivé státy.
-        if totals['div_usa_gross'] > 0:
-            xml.append(f'    <VetaZ stat="US" prijem_zahr="{int(totals["div_usa_gross"])}" dan_zap_zahr="{int(totals["div_usa_withheld"])}"/>')
+        # ---------------------------------------------------------------------
+        # 1. VÝPOČET PRO PŘÍLOHU 4: DIVIDENDY (§ 16a - Samostatný základ daně)
+        # ---------------------------------------------------------------------
+        # Zrušeno nebezpečné zaokrouhlování nahoru/dolů, hodnoty musí být běžná celá čísla
+        div_gross = round(totals.get('div_usa_gross', 0) + totals.get('div_uk_gross', 0))
+        da_samzakl = 0
+        veta_z_xml = ""
         
-        if totals['div_uk_gross'] > 0:
-            # Pro všechny evropské UCITS/UK tituly použijeme kód GB (Velká Británie)
-            xml.append(f'    <VetaZ stat="GB" prijem_zahr="{int(totals["div_uk_gross"])}" dan_zap_zahr="0"/>')
+        if div_gross > 0:
+            div_tax_cz = round(div_gross * 0.15)
+            # Zahraniční daň (zde jen z USA, protože UK má daň z dividend 0 %)
+            div_foreign = round(totals.get('div_usa_withheld', 0))
+            
+            # Uznaná daň metodou prostého zápočtu nesmí přesáhnout teoretickou českou daň
+            div_recognized = min(div_foreign, div_tax_cz)
+            
+            # Finální částka k doplacení českému finančnímu úřadu
+            tax_to_pay = max(0, div_tax_cz - div_recognized)
+            da_samzakl = tax_to_pay
+            
+            # VetaZ přesně mapuje řádky 401a až 414 v Příloze 4
+            veta_z_xml = (
+                f'    <VetaZ kc_prij48="{div_gross}" kc_zd48="{div_gross}" '
+                f'kc_uhrndzd="{div_gross}" kc_dan415="{div_tax_cz}" '
+                f'kc_uh415="{div_gross}" kc_zahr415="{div_foreign}" '
+                f'kc_uznzap415="{div_recognized}" da_samzakl4="{tax_to_pay}"/>'
+            )
 
-        xml.append('  </DPFDP5>')
+        # ---------------------------------------------------------------------
+        # 2. HLAVIČKA PŘIZNÁNÍ (Věta D) a POPLATNÍK (Věta P)
+        # ---------------------------------------------------------------------
+        # XML XSD striktně vyžaduje určité atributy, jinak XML rovnou odmítne.
+        # c_ufo_cil="453" je zástupný kód (FÚ pro hl. m. Prahu), uživatel si ho na portálu snadno změní
+        veta_d_attr = f'rok="{year}" dap_typ="B" k_uladis="DPF" dokument="DP7" pln_moc="N" audit="N" c_ufo_cil="453"'
+        
+        if da_samzakl > 0:
+            veta_d_attr += f' da_samzakl="{da_samzakl}"'
+            
+        xml.append(f'    <VetaD {veta_d_attr}/>')
+        xml.append('    <VetaP jmeno="" prijmeni=""/>')
+
+        # ---------------------------------------------------------------------
+        # 3. PŘÍPRAVA DAT PRO PRODEJ AKCIÍ (§ 10 - Příloha č. 2)
+        # ---------------------------------------------------------------------
+        p10_inc = round(totals.get('p10_income', 0))
+        p10_exp = round(totals.get('p10_expense', 0))
+        
+        if p10_inc > 100000:
+            p10_prof = max(0, p10_inc - p10_exp)
+            
+            # VetaO propojujeme Přílohu 2 s hlavním formulářem (řádek 40 = kc_zd10)
+            xml.append(f'    <VetaO kc_zd10="{p10_prof}"/>')
+            
+            # VetaV je sumář Přílohy 2 (řádky 207, 208, 209)
+            xml.append(f'    <VetaV kc_prij10="{p10_inc}" kc_vyd10="{p10_exp}" kc_zd10p="{p10_prof}"/>')
+            
+            # VetaJ je konkrétní detailní řádek v tabulce Přílohy 2 (Kód D = prodej cenných papírů)
+            xml.append(f'    <VetaJ druh_prij10="Prodej cenných papírů" kod_dr_prij10="D" prijmy10="{p10_inc}" vydaje10="{p10_exp}" rozdil10="{p10_prof}"/>')
+
+        # Připojení dat o dividendách (Příloha 4), pokud existují
+        if veta_z_xml:
+            xml.append(veta_z_xml)
+
+        # Uzavření XML
+        xml.append(f'  </{root_tag}>')
         xml.append('</Pisemnost>')
 
         with open(filename, 'w', encoding='utf-8') as f:
