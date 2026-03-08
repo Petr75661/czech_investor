@@ -38,29 +38,30 @@ PORTFOLIO_FILE = "portfolio_ledger.json"
 # pokud má uživatel uložené vlastní váhy v JSON souboru.
 TARGETS = {
     # Britská část
-    "LGEN.L": 0.1120729813881047,   # Legal & General - High Yield
-    "ULVR.L": 0.051580250723539584, # Unilever - Defensive Staples
-    "TRIG.L": 0.04778857499557946,  # Renewables Infrastructure - Income
+    "LGEN.L": 0.0962904534140656,   # Legal & General - High Yield
+    "ULVR.L": 0.04339500794232023,  # Unilever - Defensive Staples
+    "TRIG.L": 0.09496151355735824,  # Renewables Infrastructure - Income
 
     # Americká část
-    "JNJ":    0.043480106191716765, # Johnson & Johnson - Core Healthcare
-    "NEE":    0.03902056452830023,  # NextEra - Green Utility Growth
-    "PEP":    0.057924321182993024, # PepsiCo - Resilient Staples
-    "CAT":    0.06911366645682183,  # Industrial/Cyclical Growth
-    "AAPL":   0.06527870196036836,  # Technology/Quality Growth
-    "O":      0.0977590222139099,   # Reality
-    "ABBV":   0.07669107252283132,  # Farmaceutický gigant
-    "MAIN":   0.10598644606220867,  # Business Development Company (úvěry firmám)
-    "HTGC":   0.08995109327246527,  # BDC fond (technologie a life-sciences)
-    "OHI":    0.10188903060550224,  # Zdravotnický REIT (domovy s pečovatelskou službou)
-    "AVGO":   0.04146416789565879,  # Broadcom
+    "JNJ":    0.04223442407449506,  # Johnson & Johnson - Core Healthcare
+    "NEE":    0.04164047745742633,  # NextEra - Green Utility Growth
+    "PEP":    0.05009304221313858,  # PepsiCo - Resilient Staples
+    "CAT":    0.054606034730671396, # Industrial/Cyclical Growth
+    "AAPL":   0.04502803530977044,  # Technology/Quality Growth
+    "O":      0.042072155640151904, # Reality
+    "ABBV":   0.05092109039456007,  # Farmaceutický gigant
+    "MAIN":   0.09148972366558898,  # Business Development Company (úvěry firmám)
+    "HTGC":   0.08648783099862456,  # BDC fond (technologie a life-sciences)
+    "OHI":    0.08808725857018594,  # Zdravotnický REIT (domovy s pečovatelskou službou)
+    "AVGO":   0.09011472979451929,  # Broadcom
+    "MRK":    0.08257822223712338,  # Merck - biotechnologie
 }
 
 # Měny jednotlivých titulů pro správný výpočet FX (převodů měn)
 CURRENCIES = {
     "LGEN.L": "GBP", "ULVR.L": "GBP", "TRIG.L": "GBP", 
     "JNJ": "USD", "NEE": "USD", "PEP": "USD", "CAT": "USD", "AAPL": "USD",
-    "O": "USD", "ABBV": "USD", "MAIN": "USD", "HTGC": "USD", "OHI": "USD", "AVGO": "USD",
+    "O": "USD", "ABBV": "USD", "MAIN": "USD", "HTGC": "USD", "OHI": "USD", "AVGO": "USD", "MRK": "USD",
 }
 
 # Pravidla pro hodnocení "zdraví" portfolia (použito v Editoru akcií)
