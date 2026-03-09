@@ -148,8 +148,8 @@ DEFAULT_STOCK_DB = {
 }
 
 # Parametry pro Monte Carlo tuning portfolia
-MIN_W = 0.04
-MAX_W = 0.10
+MIN_W = 0.045
+MAX_W = 0.096
 EPS = 0.001
 ENFORCEMENT_W = 0.5  # Důraz na trefení čísla na slideru
 STABILITY_W = 0.5    # Důraz na minimální změnu existujících vah
@@ -171,33 +171,47 @@ def _worker_simulation_task(n_sims, active_indices, fixed_weights, target_sum,
     Využívá Rejection Sampling k vygenerování validních vah a numpy matice k rychlému
     výpočtu rizik (drawdown) a výnosů. Běží odděleně na každém jádře CPU.
     """
+    n_assets = len(active_indices)
     valid_w_list =[]
-    batch_size = 20000
-    iters = 0
-    max_iters = 500 
     
-    # Generování náhodných vah v zadaných mezích
-    while len(valid_w_list) < n_sims and iters < max_iters:
-        iters += 1
-        
-        # Ošetření pro 1 akcii nebo nulové rozmezí
-        if min_w >= max_w:
-            w_act = np.full((batch_size, len(active_indices)), min_w)
-        else:
-            w_act = np.random.uniform(min_w, max_w, (batch_size, len(active_indices)))
-            
+    # 1. Edge-case: Ošetření pro 1 akcii nebo matematicky znemožněné rozmezí
+    if min_w >= max_w or n_assets == 0:
+        w_act = np.full((n_sims, max(1, n_assets)), min_w)
         sums = np.sum(w_act, axis=1, keepdims=True)
-        sums[sums == 0] = 1.0 # Ochrana proti dělení nulou
+        sums[sums == 0] = 1.0
         w_act = w_act / sums * target_sum
+        valid_w_matrix = w_act
+    else:
+        # 2. Vektorizované generování vah s iterativní projekcí
+        # Používáme Dirichletovu distribuci (přirozeně sumuje na 1) a následně
+        # chytře nutíme matici pomocí clippingu do zadaných mantinelů min_w a max_w,
+        # čímž zcela eliminujeme zahazování vah z důvodu "Prokletí dimenzionality".
+        w_act = np.random.dirichlet(np.ones(n_assets), n_sims) * target_sum
         
-        mask = np.all((w_act >= min_w - eps) & (w_act <= max_w + eps), axis=1)
-        good_batches = w_act[mask]
-        for gw in good_batches:
-            full = fixed_weights.copy()
-            full[active_indices] = gw
-            valid_w_list.append(full)
-            if len(valid_w_list) == n_sims: break
-    
+        # Iterativní redistribuce - obvykle stačí cca 5 iterací k absolutní konvergenci
+        for _ in range(10):
+            # Oříznutí přetékajících nebo podtékajících vah
+            w_act = np.clip(w_act, min_w, max_w)
+            # Spočítání rozdílu do požadované sumy portfolia
+            diffs = target_sum - np.sum(w_act, axis=1, keepdims=True)
+            # Ztracenou (nebo přebývající) váhu z ořezu rovnoměrně rozprostřeme mezi zbytek
+            w_act += diffs / n_assets
+            
+        # Vynucení finálního ořezu po poslední redistribuci
+        w_act = np.clip(w_act, min_w, max_w)
+        
+        # Pojistná filtrace (zabezpečí 100% přesnost i u limitních matematických případů)
+        final_sums = np.sum(w_act, axis=1)
+        mask = (np.abs(final_sums - target_sum) <= eps)
+        valid_w_matrix = w_act[mask]
+
+    # 3. Zabalení vygenerovaných bloků zpět do kompletního pole vah (včetně fixovaných akcií)
+    for gw in valid_w_matrix:
+        full = fixed_weights.copy()
+        full[active_indices] = gw
+        valid_w_list.append(full)
+        
+    # Pokud z nějakého důvodu nastal absolutní fail (nemožné limity), ochrana pádu aplikace
     if not valid_w_list: return np.array([]), np.array([])
     weights_chunk = np.array(valid_w_list)
     
@@ -1717,6 +1731,10 @@ class CzechInvestorApp:
         self.canvas_tune.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
         self.canvas_tune.mpl_connect('motion_notify_event', self.on_hover_pie)
+        # Skrytí tooltipu při opuštění plochy grafu myší
+        self.canvas_tune.mpl_connect('axes_leave_event', lambda e: self._hide_tooltip())
+        # Skrytí tooltipu při ztrátě fokusu okna (Alt+Tab do jiné aplikace)
+        self.root.bind("<FocusOut>", lambda e: self._hide_tooltip())
         
         self.simulated_portfolios = None
         self.sim_metrics = None
@@ -3668,8 +3686,8 @@ class CzechInvestorApp:
         self.pie_tooltip.deiconify() # Zobrazí okénko, pokud bylo skryto
 
     def _hide_tooltip(self):
-        """Skryje plovoucí okénko."""
-        if self.pie_tooltip: 
+        """Skryje plovoucí okénko. Bezpečně ošetřeno pro volání z FocusOut událostí."""
+        if getattr(self, 'pie_tooltip', None): 
             self.pie_tooltip.withdraw() # Skryje okénko, ale nezničí ho
 
     # --------------------------------------------------------------------------
