@@ -148,7 +148,7 @@ DEFAULT_STOCK_DB = {
 }
 
 # Parametry pro Monte Carlo tuning portfolia
-MIN_W = 0.040
+MIN_W = 0.04
 MAX_W = 0.1
 EPS = 0.001
 ENFORCEMENT_W = 0.5  # Důraz na trefení čísla na slideru
@@ -179,28 +179,29 @@ def _worker_simulation_task(n_sims, active_indices, fixed_weights, target_sum,
         w_act = np.full((n_sims, max(1, n_assets)), min_w)
         sums = np.sum(w_act, axis=1, keepdims=True)
         sums[sums == 0] = 1.0
-        w_act = w_act / sums * target_sum
-        valid_w_matrix = w_act
+        valid_w_matrix = w_act / sums * target_sum
     else:
-        # 2. Vektorizované generování vah s iterativní projekcí
-        # Používáme Dirichletovu distribuci (přirozeně sumuje na 1) a následně
-        # chytře nutíme matici pomocí clippingu do zadaných mantinelů min_w a max_w,
-        # čímž zcela eliminujeme zahazování vah z důvodu "Prokletí dimenzionality".
-        w_act = np.random.dirichlet(np.ones(n_assets), n_sims) * target_sum
+        # 2. Vektorizované generování vah (Vracíme se k Dirichletovu rozdělení)
+        # Nativně prozkoumává vnitřní prostor a netlačí extrémní množství 
+        # portfolií do rohů jako to dělalo 'uniform' rozdělení.
+        x = np.random.dirichlet(np.ones(n_assets), n_sims) * target_sum
         
-        # Iterativní redistribuce - obvykle stačí cca 5 iterací k absolutní konvergenci
-        for _ in range(10):
-            # Oříznutí přetékajících nebo podtékajících vah
-            w_act = np.clip(w_act, min_w, max_w)
-            # Spočítání rozdílu do požadované sumy portfolia
-            diffs = target_sum - np.sum(w_act, axis=1, keepdims=True)
-            # Ztracenou (nebo přebývající) váhu z ořezu rovnoměrně rozprostřeme mezi zbytek
-            w_act += diffs / n_assets
+        # Fáze "Soft-Projection" (Přesná matematická projekce na hranice).
+        # Hledáme posun lambda tak, aby součet po zaříznutí (clip) dal přesně target_sum.
+        # Toto elegantně řeší problém "4.2 %" - zachovává Dirichletovo hladké rozložení, 
+        # ale hodnoty mimo limity se zaříznou naprosto ostře bez nechtěného posunu.
+        lambda_shift = np.zeros((n_sims, 1))
+        
+        for _ in range(25): # 25 iterací spolehlivě zaručí absolutní konvergenci
+            w_clipped = np.clip(x + lambda_shift, min_w, max_w)
+            diffs = target_sum - np.sum(w_clipped, axis=1, keepdims=True)
+            # Rychlý a bezpečný gradientní krok
+            lambda_shift += diffs / n_assets
             
-        # Vynucení finálního ořezu po poslední redistribuci
-        w_act = np.clip(w_act, min_w, max_w)
+        # Finální oříznutí s aplikovaným posunem
+        w_act = np.clip(x + lambda_shift, min_w, max_w)
         
-        # Pojistná filtrace (zabezpečí 100% přesnost i u limitních matematických případů)
+        # Pojistná filtrace proti nepřesnostem ve Float operacích
         final_sums = np.sum(w_act, axis=1)
         mask = (np.abs(final_sums - target_sum) <= eps)
         valid_w_matrix = w_act[mask]
@@ -256,7 +257,7 @@ class CzechInvestorApp:
         
         current_year = datetime.now().year
         self.root.title("Czech Investor: Tax & Portfolio Manager")
-        self.root.geometry("1500x950")  
+        self.root.geometry("1500x960")  
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self._slider_job = None      
@@ -328,12 +329,18 @@ class CzechInvestorApp:
                     history = data.get("sales_history",[])
                     rates = data.get("uniform_rates", {})
                     
+                    # Načtení custom limitů (s fallbackem na globální konstanty)
+                    self.custom_min_w = float(data.get("min_w", MIN_W))
+                    self.custom_max_w = float(data.get("max_w", MAX_W))
+                    
                     return ledger, history, rates
             except Exception as e: 
                 print(f"Varování při načítání JSON: {e}")
         
         self.ethical_filters = {k: True for k in TAGS}
-        return {t: [] for t in TARGETS},[], {}
+        self.custom_min_w = MIN_W
+        self.custom_max_w = MAX_W
+        return {t:[] for t in TARGETS},[], {}
 
     def save_data(self):
         data = { 
@@ -342,7 +349,9 @@ class CzechInvestorApp:
             "sales_history": self.sales_history, 
             "uniform_rates": self.uniform_rates,
             "stock_db": getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB),
-            "ethical_filters": getattr(self, 'ethical_filters', {k: True for k in TAGS})
+            "ethical_filters": getattr(self, 'ethical_filters', {k: True for k in TAGS}),
+            "min_w": getattr(self, 'custom_min_w', MIN_W),
+            "max_w": getattr(self, 'custom_max_w', MAX_W)
         }
         with open(PORTFOLIO_FILE, "w") as f: json.dump(data, f, indent=4)
 
@@ -740,6 +749,15 @@ class CzechInvestorApp:
         """Spustí funkci na pozadí s vizuální indikací a uzamkne UI Tuneru."""
         if self.tuner_loading_state["is_loading"]: return
         
+        # Zrušení jakéhokoliv plánovaného výpočtu ze sliderů, aby nekolidoval se simulací
+        if getattr(self, '_slider_job', None):
+            self.root.after_cancel(self._slider_job)
+            self._slider_job = None
+
+        # Validace limitů z textových polí na hlavním vlákně před spuštěním
+        if hasattr(self, '_validate_and_get_limits'):
+            self._validate_and_get_limits()
+            
         self.show_loading(self.tuner_loading_state, msg)
         self._set_tuner_controls_state(tk.DISABLED) # Okamžité vizuální zablokování UI
         
@@ -1539,12 +1557,41 @@ class CzechInvestorApp:
         
         title_frame = tk.Frame(control_panel, bg="#FFF8E1")
         title_frame.pack(fill=tk.X, pady=(0, 10))
-        self.lbl_tuner_title = tk.Label(title_frame, text=f"Optimalizace ({int(MIN_W*100)}-{int(MAX_W*100)}%)", font=("Arial", 18, "bold"), bg="#FFF8E1")
+        
+        min_v = getattr(self, 'custom_min_w', MIN_W) * 100
+        max_v = getattr(self, 'custom_max_w', MAX_W) * 100
+        
+        str_min_init = f"{min_v:g}".replace('.', ',')
+        str_max_init = f"{max_v:g}".replace('.', ',')
+        
+        self.lbl_tuner_title = tk.Label(title_frame, text=f"Optimalizace ({str_min_init}-{str_max_init}%)", font=("Arial", 18, "bold"), bg="#FFF8E1")
         self.lbl_tuner_title.pack(side=tk.LEFT)
         
         # Uložení reference na tlačítko Změnit akcie
         self.btn_change_stocks = tk.Button(title_frame, text="⚙️ Změnit akcie", command=self.open_portfolio_editor, font=("Arial", 12), bg="#DDD")
         self.btn_change_stocks.pack(side=tk.RIGHT)
+        
+        # PŘIDÁNO: Textboxy pro uživatelské nastavení limitů vah
+        limits_frame = tk.Frame(control_panel, bg="#FFF8E1")
+        limits_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        tk.Label(limits_frame, text="Min váha (%):", font=("Arial", 12, "bold"), bg="#FFF8E1").pack(side=tk.LEFT)
+        self.entry_min_w = tk.Entry(limits_frame, font=("Arial", 12), width=6)
+        self.entry_min_w.pack(side=tk.LEFT, padx=(5, 20))
+        self.entry_min_w.insert(0, str_min_init)
+        
+        tk.Label(limits_frame, text="Max váha (%):", font=("Arial", 12, "bold"), bg="#FFF8E1").pack(side=tk.LEFT)
+        self.entry_max_w = tk.Entry(limits_frame, font=("Arial", 12), width=6)
+        self.entry_max_w.pack(side=tk.LEFT, padx=(5, 10))
+        self.entry_max_w.insert(0, str_max_init)
+        
+        # Deaktivace tlačítka "Vylepšit" při ručním zásahu do limitů
+        def disable_vylepsit_btn(event):
+            if hasattr(self, 'btn_auto_tune') and self.btn_auto_tune.winfo_exists():
+                self.btn_auto_tune.config(state=tk.DISABLED)
+                
+        self.entry_min_w.bind("<KeyRelease>", disable_vylepsit_btn)
+        self.entry_max_w.bind("<KeyRelease>", disable_vylepsit_btn)
         
         # Zabalení do ohraničeného rámečku s popiskem
         cb_container = tk.LabelFrame(control_panel, text="Které akcie chcete tunit? (nezaškrtlé = fixováno)", bg="#FFF8E1", font=("Arial", 11, "bold"))
@@ -1668,7 +1715,7 @@ class CzechInvestorApp:
         self.btn_apply_weights = tk.Button(control_panel, text="✓ POUŽÍT NOVÉ VÁHY", command=self.apply_tuned_weights, bg="#2E7D32", fg="white", font=("Arial", 12, "bold"))
         self.btn_apply_weights.pack(pady=10, fill=tk.X)
 
-        # Tabulka Base portfolia (zmenšená)
+        # Tabulka Base portfolia
         base_frame = tk.LabelFrame(control_panel, text="Aktuální (base)", bg="#FFF8E1", font=("Arial", 12, "bold"))
         base_frame.pack(fill=tk.X)
         
@@ -1741,6 +1788,49 @@ class CzechInvestorApp:
         self.updating_sliders = False 
         self.tuner_base_weights = TARGETS.copy() 
         self.tuner_loading_state = self._create_loading_card(self.tuner_frame)
+
+    def _validate_and_get_limits(self):
+        """Načte, zkontroluje a případně opraví uživatelské limity z UI před výpočtem."""
+        # Zrušíme naplánované ladění, aby se nepralo s novými limity
+        if getattr(self, '_slider_job', None):
+            self.root.after_cancel(self._slider_job)
+            self._slider_job = None
+
+        # Pokus o načtení MIN váhy
+        try:
+            min_val = float(self.entry_min_w.get().replace(',', '.'))
+        except ValueError:
+            min_val = MIN_W * 100.0
+
+        # Pokus o načtení MAX váhy
+        try:
+            max_val = float(self.entry_max_w.get().replace(',', '.'))
+        except ValueError:
+            max_val = MAX_W * 100.0
+
+        # Zajištění, že jsme v povolených mezích (0 až 100 %)
+        min_val = max(0.0, min(100.0, min_val))
+        max_val = max(0.0, min(100.0, max_val))
+
+        # Pokud uživatel prohodil min a max, automaticky je obrátíme
+        if min_val > max_val:
+            min_val, max_val = max_val, min_val
+
+        # Aktualizace vnitřních proměnných (v desetinném tvaru)
+        self.custom_min_w = min_val / 100.0
+        self.custom_max_w = max_val / 100.0
+
+        # Přepsání UI textových polí na čisté a opravené hodnoty
+        str_min = f"{min_val:g}".replace('.', ',')
+        str_max = f"{max_val:g}".replace('.', ',')
+        
+        self.entry_min_w.delete(0, tk.END)
+        self.entry_min_w.insert(0, str_min)
+        self.entry_max_w.delete(0, tk.END)
+        self.entry_max_w.insert(0, str_max)
+
+        # Aktualizace titulku panelu
+        self.lbl_tuner_title.config(text=f"Optimalizace ({str_min}-{str_max}%)")
 
     def _update_base_labels(self, metrics):
         self.lbl_base_div.config(text=f"{metrics[0]:,.0f} Kč".replace(',', ' '))
@@ -1944,8 +2034,9 @@ class CzechInvestorApp:
                 self.base_metrics_data = b_m # Uložíme pro potřeby kreslení grafu
                 self.root.after(0, lambda: self._update_base_labels(b_m))
             
-            adj_min_w = MIN_W
-            adj_max_w = MAX_W
+            # Načtení custom limitů z instance třídy (získané validátorem textových polí)
+            adj_min_w = getattr(self, 'custom_min_w', MIN_W)
+            adj_max_w = getattr(self, 'custom_max_w', MAX_W)
             
             n_active = len(active_indices)
             if n_active > 0:
@@ -1957,16 +2048,33 @@ class CzechInvestorApp:
                     adj_max_w = target_sum
                 else:
                     avg_w = target_sum / n_active
-                    # Pokud by matematicky nebylo možné trefit sumu s fixními limity (příliš mnoho nebo příliš málo akcií),
-                    # dynamicky upravíme meze, aby generátor vždy našel alespoň jednu platnou variantu vah.
-                    if (MIN_W * n_active > target_sum - EPS) or (MAX_W * n_active < target_sum + EPS):
+                    # Ochrana: I zde už musíme počítat s dynamickými custom limity uživatele.
+                    if (adj_min_w * n_active > target_sum - EPS) or (adj_max_w * n_active < target_sum + EPS):
                         spread = avg_w * 0.5
                         adj_min_w = max(0.0, avg_w - spread)
                         adj_max_w = min(1.0, avg_w + spread)
             
-            # Vizuální aktualizace nadpisu s použitými dynamickými limity
-            if hasattr(self, 'lbl_tuner_title'):
-                self.root.after(0, lambda min_val=adj_min_w, max_val=adj_max_w: self.lbl_tuner_title.config(text=f"Optimalizace ({int(min_val*100)}-{int(max_val*100)}%)"))
+            # Lokální pomocná funkce pro propsání finálních (matematicky korektních) limitů do UI a paměti
+            def _update_ui_limits(m_min, m_max):
+                self.custom_min_w = m_min
+                self.custom_max_w = m_max
+                
+                # Zaokrouhlení na max 2 desetinná místa, aby nevznikaly texty jako 3.33333
+                # Formát 'g' se postará o oříznutí přebytečných nul a nahradíme tečku čárkou
+                str_min = f"{round(m_min * 100, 2):g}".replace('.', ',')
+                str_max = f"{round(m_max * 100, 2):g}".replace('.', ',')
+                
+                if hasattr(self, 'lbl_tuner_title'):
+                    self.lbl_tuner_title.config(text=f"Optimalizace ({str_min}-{str_max}%)")
+                if hasattr(self, 'entry_min_w'):
+                    self.entry_min_w.delete(0, tk.END)
+                    self.entry_min_w.insert(0, str_min)
+                if hasattr(self, 'entry_max_w'):
+                    self.entry_max_w.delete(0, tk.END)
+                    self.entry_max_w.insert(0, str_max)
+                    
+            # Bezpečné zavolání úpravy UI na hlavním vlákně
+            self.root.after(0, lambda: _update_ui_limits(adj_min_w, adj_max_w))
 
             chunk_size = n_sims // n_cores
             period_returns_vals = self.tuner_period_returns.values 
@@ -2116,7 +2224,13 @@ class CzechInvestorApp:
         self._slider_job = None
         
     def update_sliders_visuals(self, from_user_interaction=False, skip_key=None):
+        # 1. Zrušíme případný čekající výpočet, protože UI právě teď nastavujeme na nová data
+        if getattr(self, '_slider_job', None):
+            self.root.after_cancel(self._slider_job)
+            self._slider_job = None
+
         self.updating_sliders = True
+        
         metrics = self.sim_metrics[self.current_sim_idx]
         weights = self.sim_weights[self.current_sim_idx]
         
@@ -2151,6 +2265,10 @@ class CzechInvestorApp:
                 
         # Samotné překreslení grafů delegujeme na metodu, která přečte stav přepínačů
         self._redraw_tuner_charts()
+        # 2. VYNUCENÍ ZPRACOVÁNÍ: Pošleme Tkinteru instrukci, aby okamžitě zpracoval 
+        # všechny události změny sliderů (Scale command). Ty díky flagu 'updating_sliders' 
+        # v metodě 'on_slider_change' okamžitě skončí (return) a nenaplánují novou úlohu.
+        self.root.update_idletasks()
         self.updating_sliders = False
 
     def _redraw_tuner_charts(self):
@@ -2302,6 +2420,11 @@ class CzechInvestorApp:
     def apply_tuned_weights(self):
         if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
         if self.sim_metrics is None: return
+        
+        # Zkontrolujeme a opravíme textová pole těsně před zápisem dat do JSONu
+        if hasattr(self, '_validate_and_get_limits'):
+            self._validate_and_get_limits()
+            
         global TARGETS
         new_w = self.sim_weights[self.current_sim_idx]
         for t, w in zip(self.ordered_tickers, new_w):
@@ -3031,7 +3154,7 @@ class CzechInvestorApp:
         editor = self.editor_window
         editor.title("Editor Výběru Akcií")
         
-        # Rozšíření okna na 1350px pro pohodlné zobrazení dlouhých názvů ETF
+        # Velikost okna 1350px zajišťuje pohodlné zobrazení dlouhých názvů ETF
         editor.geometry("1350x750") 
         editor.grab_set() 
         
