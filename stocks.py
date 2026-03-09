@@ -2554,25 +2554,50 @@ class CzechInvestorApp:
                 # Srovnáme váhy do vektoru odpovídajícímu sloupcům v hist_prices
                 w_vector = np.array([actual_weights.get(col, 0.0) for col in hist_prices.columns])
                 
-                # Výpočet denních výnosů portfolia
+                # Výpočet denních výnosů portfolia (pro šedou simulační čáru)
                 portfolio_daily_returns = daily_pct_changes.dot(w_vector)
-                
-                # Kumulativní křivka končící v bodě 1.0
                 norm_curve = (1 + portfolio_daily_returns).cumprod()
                 
-                # 4. Škálování: Křivka musí končit přesně na dnešní hodnotě majetku
-                # Tím získáme startovní kapitál, který bychom museli mít před 5 lety.
+                # Škálování simulace (šedá čára) tak, aby končila na dnešní hodnotě majetku
                 scaling_factor = total_portfolio_now / norm_curve.iloc[-1]
-                curve = norm_curve * scaling_factor
+                sim_curve = norm_curve * scaling_factor
 
+                # --- NOVÁ LOGIKA: REKONSTRUKCE REÁLNÉHO VÝVOJE (Modrá čára) ---
+                # Vytvoříme matici množství (počet kusů v čase pro každý ticker)
+                qty_matrix = pd.DataFrame(0.0, index=hist_prices.index, columns=all_tickers)
+                for t, lots in ledger_dt.items():
+                    for lot in lots:
+                        # Od data nákupu dále přičteme množství k danému tickeru
+                        qty_matrix.loc[lot['date']:, t] += lot['qty']
+                
+                # Výpočet reálné hodnoty portfolia v CZK den po dni
+                real_portfolio_curve = pd.Series(0.0, index=hist_prices.index)
+                for t in all_tickers:
+                    if t in hist_prices.columns:
+                        # Převod britských pencí na libry u titulů .L
+                        p_factor = 0.01 if t.endswith(".L") else 1.0
+                        # Použijeme kurz dané měny
+                        fx_val = fx.get(self.get_currency_for_ticker(t), 23.0)
+                        real_portfolio_curve += qty_matrix[t] * hist_prices[t] * p_factor * fx_val
+
+                # --- VYKRESLENÍ ---
                 self.ax1.clear()
                 
                 if has_buys:
-                    self.ax1.plot(curve[:first_buy_dt].index, curve[:first_buy_dt].values, color='grey', linestyle='--', alpha=0.6, label="Simulace")
-                    self.ax1.plot(curve[first_buy_dt:].index, curve[first_buy_dt:].values, color='#1976D2', linewidth=2, label="Reálné portfolio")
+                    # Šedá čára (Simulace) - co by se stalo, kdybyste dnešní sumu zainvestovali před 5 lety
+                    self.ax1.plot(sim_curve[:first_buy_dt].index, sim_curve[:first_buy_dt].values, 
+                                  color='grey', linestyle='--', alpha=0.6, label="Simulace (hypotetická historie)")
+                    
+                    # Modrá čára (Realita) - skutečná hodnota portfolia od prvního nákupu
+                    # Ořezáváme data před prvním nákupem, aby graf nezačínal na nule v roce 2021
+                    real_data_to_plot = real_portfolio_curve[real_portfolio_curve.index >= first_buy_dt]
+                    self.ax1.plot(real_data_to_plot.index, real_data_to_plot.values, 
+                                  color='#1976D2', linewidth=2, label="Reálné portfolio (vč. nákupů)")
+                    
                     self.ax1.axvline(x=first_buy_dt, color='red', linestyle='-', alpha=0.4)
                 else:
-                    self.ax1.plot(curve.index, curve.values, color='grey', linestyle='--', alpha=0.6, label="Simulace")
+                    self.ax1.plot(sim_curve.index, sim_curve.values, color='grey', linestyle='--', alpha=0.6, label="Simulace")
+
                     
                 self.ax1.set_title("Vývoj hodnoty portfolia při reinvestici dividend (simulace a realita)")
                 self.ax1.grid(True, linestyle='--', alpha=0.5)
@@ -2599,7 +2624,7 @@ class CzechInvestorApp:
                 
                 for y in years:
                     y_start, y_end = f"{y}-01-01", f"{y}-12-31"
-                    sub_curve = curve.loc[y_start:y_end]
+                    sub_curve = sim_curve.loc[y_start:y_end]
                     if sub_curve.empty: continue
 
                     val_start, val_end = sub_curve.iloc[0], sub_curve.iloc[-1]
