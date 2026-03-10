@@ -158,6 +158,7 @@ MC_NO_IMPR = 500000  # Počet simulovaných portfolií při vylepšování
 MAX_DIV_SHARE = 0.23 # Maximální tolerovaný podíl jedné akcii v celkovém úhrnu dividend
 DIV_YIELD_DROP = 0.5 # Očekávaný poměr změny dividend u akcií, které vyplácejí více než 90% zisku
 DIV_WARN_FRACTION = 0.03 # Od jakého podílu jednoho zdroje dividend se zobrazí varování
+HHI_PENALTY = 2.0    # míra penalizace koncentrace portfolia při optimalizaci (multiplikátor Herfindahl-Hirschmanova indexu)
 
 # ==============================================================================
 # 2. JÁDRO PRO MULTIPROCESSING (MONTE CARLO)
@@ -181,10 +182,14 @@ def _worker_simulation_task(n_sims, active_indices, fixed_weights, target_sum,
         sums[sums == 0] = 1.0
         valid_w_matrix = w_act / sums * target_sum
     else:
-        # 2. Vektorizované generování vah (Vracíme se k Dirichletovu rozdělení)
-        # Nativně prozkoumává vnitřní prostor a netlačí extrémní množství 
-        # portfolií do rohů jako to dělalo 'uniform' rozdělení.
-        x = np.random.dirichlet(np.ones(n_assets), n_sims) * target_sum
+        # 2. Hybridní generátor: Mix průzkumu (rohy) a diverzifikace (střed)
+        # alpha=1.0 prozkoumává extrémy (dobré pro maximalizaci dividend)
+        # alpha=5.0 nutí matici ke koncentraci vah doprostřed (dobré pro diverzifikaci)
+        sims_half = n_sims // 2
+        x_explore = np.random.dirichlet(np.full(n_assets, 1.0), sims_half)
+        x_center = np.random.dirichlet(np.full(n_assets, 5.0), n_sims - sims_half)
+        
+        x = np.vstack([x_explore, x_center]) * target_sum
         
         # Fáze "Soft-Projection" (Přesná matematická projekce na hranice).
         # Hledáme posun lambda tak, aby součet po zaříznutí (clip) dal přesně target_sum.
@@ -2121,26 +2126,41 @@ class CzechInvestorApp:
                 new_m = np.vstack(m_chunks)
                 
                 if auto_improve:
+                    # Výpočet HHI pro aktuální batch a dosavadního šampiona
+                    new_hhi = np.sum(new_w**2, axis=1)
+                    best_hhi = np.sum(best_w**2)
+
                     # 1. Žádná z prvních 6 metrik nesmí být horší (přidána mikroskopická tolerance na nepřesnost Floatů)
+                    # Také se nesmí zhoršit diverzifikace (HHI)
                     eps_tol = 1e-5
-                    mask = np.all(new_m[:, :6] >= best_m[:6] - eps_tol, axis=1)
+                    mask_metrics = np.all(new_m[:, :6] >= best_m[:6] - eps_tol, axis=1)
+                    mask_hhi = new_hhi <= best_hhi + eps_tol
                     
-                    # 2. Alespoň jedna z 6 metrik musí být prokazatelně lepší 
+                    # 2. Alespoň jedna z 6 metrik (nebo koncentrace HHI) musí být prokazatelně lepší 
                     # Definice prahů:[Div: 1 Kč, DD: 0.01 %, Růst: 0.01 %, Bezpečná div: 1 Kč, Krizový DD: 0.01 %, Cílový růst: 0.01 %]
                     thresholds = np.array([1.0, 0.01, 0.01, 1.0, 0.01, 0.01])
-                    strict_mask = np.any(new_m[:, :6] >= best_m[:6] + thresholds, axis=1)
+                    strict_mask_metrics = np.any(new_m[:, :6] >= best_m[:6] + thresholds, axis=1)
+                    strict_mask_hhi = new_hhi <= best_hhi - 0.001 # Zlepšení HHI alespoň o 0.001
                     
-                    valid_indices = np.where(mask & strict_mask)[0]
+                    # Sloučení masek (Vše musí být stejné nebo lepší a aspoň jedno musí být znatelně lepší)
+                    valid_indices = np.where(mask_metrics & mask_hhi & (strict_mask_metrics | strict_mask_hhi))[0]
                     
                     if len(valid_indices) > 0:
-                        # Vybereme tu kombinaci, která maximalizuje součet zlepšení napříč těmito 6 metrikami
+                        # Vybereme tu kombinaci, která maximalizuje součet zlepšení napříč metrikami
                         rngs = np.ptp(new_m[:, :6], axis=0)
                         rngs[rngs == 0] = 1.0
                         diffs = new_m[valid_indices, :6] - best_m[:6]
                         norm_diffs = diffs / rngs
                         scores = np.sum(norm_diffs, axis=1)
-                        best_local_idx = valid_indices[np.argmax(scores)]
                         
+                        # Neviditelná HHI penalizace slouží jako dokonalý "Tie-Breaker".
+                        # Pokud program najde dvě portfolia s podobně vylepšenou dividendou, 
+                        # tato penalta matematicky zajistí, že si vždy vybere to rovnoměrnější.
+                        hhi_valid = new_hhi[valid_indices]
+                        scores -= (HHI_PENALTY * hhi_valid)
+                        
+                        best_local_idx = valid_indices[np.argmax(scores)]
+
                         # Uložíme si nového "šampiona" a spustíme další iteraci
                         best_w = new_w[best_local_idx].copy()
                         best_m = new_m[best_local_idx].copy()
@@ -2211,11 +2231,15 @@ class CzechInvestorApp:
         current_w = self.sim_weights[self.current_sim_idx]
         w_dist = np.linalg.norm(self.sim_weights - current_w, axis=1)
         
+        # 4. Neviditelná HHI penalizace za koncentraci
+        hhi_array = np.sum(self.sim_weights**2, axis=1)
+
         # Celkové skóre (čím menší, tím lepší)
         # ENFORCEMENT_W = tah na cíl u drženého slideru
         # STABILITY_W = fixace zbylých sliderů pomocí kvadratické chyby
         # 0.1 * w_dist = tie-breaker pro váhy
-        score = (ENFORCEMENT_W * primary_diff_norm) + (STABILITY_W * other_metrics_sq_error) + (0.1 * w_dist)
+        # HHI_PENALTY = neviditelný tahák směrem k lepší diverzifikaci
+        score = (ENFORCEMENT_W * primary_diff_norm) + (STABILITY_W * other_metrics_sq_error) + (0.1 * w_dist) + (HHI_PENALTY * hhi_array)
         
         best_idx = np.argmin(score)
         
@@ -2562,7 +2586,7 @@ class CzechInvestorApp:
                 scaling_factor = total_portfolio_now / norm_curve.iloc[-1]
                 sim_curve = norm_curve * scaling_factor
 
-                # --- NOVÁ LOGIKA: REKONSTRUKCE REÁLNÉHO VÝVOJE (Modrá čára) ---
+                # --- REKONSTRUKCE REÁLNÉHO VÝVOJE (Modrá čára) ---
                 # Vytvoříme matici množství (počet kusů v čase pro každý ticker)
                 qty_matrix = pd.DataFrame(0.0, index=hist_prices.index, columns=all_tickers)
                 for t, lots in ledger_dt.items():
@@ -2694,7 +2718,6 @@ class CzechInvestorApp:
                 
                 x = np.arange(len(growth_vals))
                 
-                # ZDE ZAČÍNÁ NOVÁ LOGIKA VYKRESLOVÁNÍ SLOUPCŮ
                 for i in range(len(x)):
                     g = growth_vals[i]  # Růst / Ztráta ceny
                     d = div_vals[i]     # Hodnota dividend
