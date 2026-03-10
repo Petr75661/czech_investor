@@ -3194,6 +3194,11 @@ class CzechInvestorApp:
             self.editor_window.focus_force()
             return
             
+        # Validace a uložení ručně zadaných limitů vah ještě před otevřením editoru,
+        # aby se po zavření editoru a překreslení UI neztratily.
+        if hasattr(self, '_validate_and_get_limits'):
+            self._validate_and_get_limits()
+            
         source_db = self.stock_db_from_json if hasattr(self, 'stock_db_from_json') else DEFAULT_STOCK_DB
         self.stock_db = json.loads(json.dumps(source_db))
         self.temp_targets = TARGETS.copy()
