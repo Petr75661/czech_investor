@@ -26,21 +26,21 @@ pip install yfinance pandas matplotlib numpy beautifulsoup4 requests reportlab
 
 ### ⚙️ Editor výběru akcií a ETF
 Definujte svůj "investiční vesmír" bez omezení.
-* **Etické filtry:** Skryjte jedním klikem Tabák, Zbraně, Kasina nebo rizika AI bublin.
-* **Plná podpora ETF:** Aplikace rozlišuje Distribuční a Akumulační UCITS ETF.
-* **Analytický pohled:** Inteligentní hodnocení diverzifikace a vyváženosti vašeho mixu (Růst vs. Cash-flow).
+* **Etické filtry:** Skryjte jedním klikem tabák, zbraně, kasina nebo firmy svázané s rizikem AI bubliny.
+* **Plná podpora ETF:** Aplikace rozlišuje distribuční a akumulační UCITS ETF.
+* **Analytický pohled:** Inteligentní hodnocení diverzifikace a vyváženosti vašeho mixu (růst vs. cash-flow).
 
 ### 📊 Pokročilý Tuning Portfolia
 Zcela unikátní dvouproudá optimalizace (Minulost vs. Budoucnost).
-* **Trychtýř nejistoty:** Aplikace nestuduje jen minulost, ale pomocí modelování *Geometric Brownian Motion* a výhledů analytiků kreslí pravděpodobný budoucí scénář.
-* **Ochrana před Value Traps:** Vestavěný "účetní rozum" filtruje nesmyslné hodnoty Payout Ratií a snižuje rating firmám, které si na dividendu půjčují.
+* **Trychtýř nejistoty:** Aplikace nestuduje jen minulost, ale pomocí modelování *geometric brownian motion* a výhledů analytiků kreslí pravděpodobný budoucí scénář.
+* **Ochrana před value traps:** Vestavěný "účetní rozum" filtruje nesmyslné hodnoty payout ratií a snižuje rating firmám, které si na dividendu půjčují.
 * **Daňová brzda:** Grafy automaticky vizualizují ztrátu na složeném úročení způsobenou srážkovou 15% daní z dividend pro férové srovnání s ETF.
 
 ### 🏦 Správa Ledgeru (FIFO)
 Striktní evidence nákupů a prodejů s respektem k lokální legislativě.
 * **Časový test:** Automatické hlídání 3letého limitu pro osvobození prodejů od daně v ČR (včetně přestupných let).
 * **FIFO algoritmus:** Přesný a legislativně korektní odečet kusů od nejstarších lotů.
-* **Měnové kurzy:** Samostatný scrapovací robot stahuje aktuální "Jednotné kurzy" vyhlášené Ministerstvem financí.
+* **Měnové kurzy:** Samostatný scrapovací robot stahuje aktuální "jednotné kurzy" vyhlášené Ministerstvem financí.
 
 ### 📄 Daňový Automat (One-Click Export)
 Konec ručního vyplňování a počítání britských pencí.
@@ -52,7 +52,7 @@ Konec ručního vyplňování a počítání britských pencí.
 
 ## 3. Investiční logika a rizika
 
-Výchozí nastavení databáze je koncipováno jako **"All-Weather Dividend Growth"** strategie kombinující to nejlepší z amerického růstu, silného britského cash-flow a defenzivních králů trhu.
+Výchozí nastavení databáze je koncipováno jako **"all-weather dividend growth"** strategie kombinující to nejlepší z amerického růstu, silného britského cash-flow a defenzivních králů trhu.
 
 ### Charakteristika výchozího mixu
 
@@ -67,7 +67,7 @@ Výchozí nastavení databáze je koncipováno jako **"All-Weather Dividend Grow
 > **INVESTIČNÍ RIZIKA:**
 > * **Koncentrace v BDC:** Tituly jako HTGC a MAIN tvoří značnou část příjmů. Jsou citlivé na úrokové sazby a stav ekonomiky USA.
 > * **Měnové riziko:** Investujete v cizích měnách. Posílení CZK vůči USD/GBP technicky snižuje hodnotu vašeho portfolia v korunách.
-> * **Závislost na datech:** Aplikace využívá neoficiální API Yahoo Finance. Aplikace má sice robustní *Spot-Check*, ale dlouhodobý výpadek serverů může dočasně omezit funkce analýzy.
+> * **Závislost na datech:** Aplikace využívá neoficiální API Yahoo Finance. Aplikace má sice robustní *spot-check*, ale dlouhodobý výpadek serverů může dočasně omezit funkce analýzy.
 
 ---
 
@@ -75,7 +75,7 @@ Výchozí nastavení databáze je koncipováno jako **"All-Weather Dividend Grow
 
 Pro disciplinované investování doporučujeme nastavit automatické spouštění aplikace v den, kdy provádíte nákupy (např. 1. den v měsíci).
 
-1. Otevřete **Plánovač úloh** (Task Scheduler) ve Windows.
+1. Otevřete **Plánovač úloh** (task scheduler) ve Windows.
 2. Zvolte **Vytvořit základní úlohu** a pojmenujte ji `Czech Investor Nákup`.
 3. Nastavte spouštění **Měsíčně**.
 4. V kroku "Akce" zvolte **Spustit program**.
@@ -90,4 +90,3 @@ Pro disciplinované investování doporučujeme nastavit automatické spouštěn
 ## 5. Důležité právní upozornění
 
 *Tato aplikace je určena výhradně pro edukační a analytické účely. Autor nenese žádnou odpovědnost za případné finanční ztráty vzniklé investováním na základě simulací v tomto softwaru. Daňový modul generuje podklady na základě aktuálně platných zákonů ČR (ke stažení jednotných kurzů 2025/2026), uživatel by si však měl finální výpočty a nárok na daňové odpočty vždy ověřit u certifikovaného daňového poradce.*
-```
