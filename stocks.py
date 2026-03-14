@@ -243,8 +243,9 @@ def _worker_simulation_task(n_sims, active_indices, fixed_weights, target_sum,
     batch_var = np.sum((weights_chunk @ cov_matrix) * weights_chunk, axis=1)
     batch_vol = np.sqrt(batch_var)
     
-    # Výpočet 95% krizového propadu (Očekávaný růst mínus 1.645 * Volatilita)
-    fut_crisis_drop = (fut_growths - 1.645 * batch_vol) * 100
+    # Výpočet 95% krizového propadu (Stress Test)
+    # V krizi se optimistický růst nerealizuje, proto jsme 'fut_growths' odstranili.
+    fut_crisis_drop = -1.645 * batch_vol * 100
     fut_crisis_drop = np.minimum(fut_crisis_drop, 0.0) # Zarovnáme na nulu, propad nesmí být kladný
     
     metrics_chunk = np.column_stack((div_income_czk, max_dds, port_growths, fut_div_czk, fut_crisis_drop, fut_growths * 100, batch_vol * 100))
@@ -2031,7 +2032,7 @@ class CzechInvestorApp:
                 # Volatilita base portfolia pro výpočet krizového propadu
                 b_var = np.dot(base_w_exact.T, np.dot(self.tuner_cov_matrix.values, base_w_exact))
                 b_vol = np.sqrt(b_var)
-                b_fdd = min((b_fgrowth_dec - 1.645 * b_vol) * 100, 0.0)
+                b_fdd = -1.645 * b_vol * 100
                 b_fgrowth = b_fgrowth_dec * 100
                 
                 # 3. Sbalení všech 6 metrik do jednoho pole a odeslání do UI
