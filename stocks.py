@@ -1103,11 +1103,10 @@ class CzechInvestorApp:
         def safe_float(val):
             """Pomocná funkce pro bezpečný převod US formátu (IBKR)."""
             try:
-                # IBKR v anglickém CSV používá čárku jako oddělovač tisíců (1,461.597).
-                # Musíme ji tedy smazat, ne nahrazovat za desetinnou tečku!
                 return float(str(val).replace(',', '').replace(' ', ''))
             except ValueError:
-                return 0.0            
+                return 0.0
+            
         try:
             with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
                 reader = csv.reader(f)
@@ -1124,7 +1123,6 @@ class CzechInvestorApp:
                 return
             
             try:
-                # Dynamicky najdeme pozice očekávaných sloupců
                 idx_desc = header_row.index('DataDiscriminator')
                 idx_asset = header_row.index('Asset Category')
                 idx_sym = header_row.index('Symbol')
@@ -1143,13 +1141,44 @@ class CzechInvestorApp:
                 if s + ".UK" in known_symbols: return s + ".UK"
                 return s
 
-            # --- KROK 1: Agregace nákupů z CSV podle klíče (Ticker, Datum) ---
+            # --- EXTRAKCE DATA VYGENEROVÁNÍ REPORTU ---
+            report_date = None
+            for row in rows:
+                if len(row) > 3 and row[0] == 'Statement' and row[1] == 'Data':
+                    # Priorita 1: WhenGenerated (přesný čas snapshotu)
+                    if row[2] == 'WhenGenerated':
+                        date_part = row[3].split(',')[0].strip()
+                        try:
+                            report_date = datetime.strptime(date_part, "%Y-%m-%d").date()
+                            break
+                        except: pass
+                    
+                    # Priorita 2: Period (pokud WhenGenerated chybí, vezmeme konec období)
+                    if row[2] == 'Period':
+                        try:
+                            # Formát: "January 1, 2026 - March 13, 2026"
+                            period_str = row[3]
+                            if '-' in period_str:
+                                end_date_str = period_str.split('-')[1].strip()
+                                # IBKR formát v Period: "March 13, 2026"
+                                report_date = datetime.strptime(end_date_str, "%B %d, %Y").date()
+                                break
+                        except: pass
+            
+            # Pokud se datum nepodařilo najít, audit nebude validní
+            if not report_date:
+                messagebox.showwarning("Audit nelze provést", 
+                    "V CSV výpisu chybí metadata o datu (WhenGenerated nebo Period).\n\n"
+                    "Nákupy budou naimportovány, ale hloubková kontrola (Audit) "
+                    "otevřených pozic bude přeskočena, protože aplikace neví, "
+                    "k jakému dni má stav Ledgeru porovnat.")
+
+            # --- KROK 1: Agregace nákupů z CSV ---
             csv_aggregated = {}
             for row in rows:
                 if len(row) > idx_price and row[0] == 'Trades' and row[1] == 'Data':
                     if row[idx_desc] == 'Order' and row[idx_asset] == 'Stocks':
                         qty = safe_float(row[idx_qty])
-                        
                         if qty > 0: 
                             sym = map_sym(row[idx_sym])
                             date_str = row[idx_date].split(',')[0].strip()
@@ -1159,7 +1188,6 @@ class CzechInvestorApp:
                                 parsed_date = date_str 
                             
                             price = safe_float(row[idx_price])
-                            
                             key = (sym, parsed_date)
                             if key not in csv_aggregated:
                                 csv_aggregated[key] = {'qty': 0.0, 'total_value': 0.0}
@@ -1167,9 +1195,8 @@ class CzechInvestorApp:
                             csv_aggregated[key]['qty'] += qty
                             csv_aggregated[key]['total_value'] += qty * price
 
-            # --- KROK 2: Agregace existujících nákupů v JSON Ledgeru a Stagingu ---
+            # --- KROK 2: Agregace existujících nákupů ---
             existing_aggregated = {}
-            # Čtení už dříve uložených nákupů
             for t, lots in self.ledger.items():
                 for lot in lots:
                     d = lot.get("date")
@@ -1177,7 +1204,6 @@ class CzechInvestorApp:
                     key = (t, d)
                     existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
                     
-            # Čtení toho, co zrovna čeká v tabulce dole před uložením
             for item in self.staging_tree.get_children():
                 vals = self.staging_tree.item(item)['values']
                 t = str(vals[0])
@@ -1186,35 +1212,121 @@ class CzechInvestorApp:
                 key = (t, d)
                 existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
 
-            # --- KROK 3: Porovnání a import pouze fyzicky chybějícího množství ---
+            # --- KROK 3: Vložení chybějícího množství do Staging fronty ---
             added_count = 0
             for (t, d), data in csv_aggregated.items():
                 csv_qty = data['qty']
                 csv_val = data['total_value']
-                
                 exist_qty = existing_aggregated.get((t, d), 0.0)
-                
-                # Zjistíme, kolik akcií za ten den nám v evidenci chybí
                 missing_qty = csv_qty - exist_qty
                 
-                # Tolerujeme mikroskopickou zaokrouhlovací odchylku
                 if missing_qty > 0.0001:
-                    # Spočítáme váženou průměrnou cenu (pouze pro informaci v UI)
                     avg_price = csv_val / csv_qty if csv_qty > 0 else 0.0
-                    
                     q_str = str(round(missing_qty, 4)).replace('.', ',')
                     p_str = str(round(avg_price, 4)).replace('.', ',')
-                    
                     self.staging_tree.insert("", "end", values=(t, d, q_str, p_str, "❌"))
                     added_count += 1
 
-            # Vyhodnocení pro uživatele
+            # =================================================================
+            # KROK 4: HLOUBKOVÝ AUDIT (KONTROLA OTEVŘENÝCH POZIC)
+            # =================================================================
+            audit_errors = []
+            audit_performed = False
+
+            if report_date:
+                audit_performed = True
+
+                # A) Načtení finálních pozic akcií přímo ze Statementu IBKR
+                ibkr_positions = {}
+                for row in rows:
+                    # Očekáváme řádek: Open Positions,Data,Summary,Stocks,GBP,LGEN,2701.251,...
+                    if len(row) > 6 and row[0] == 'Open Positions' and row[1] == 'Data' and row[2] == 'Summary' and row[3] == 'Stocks':
+                        sym = map_sym(row[5])
+                        qty = safe_float(row[6])
+                        ibkr_positions[sym] = ibkr_positions.get(sym, 0.0) + qty
+
+                # B) Výpočet teoretického stavu aplikace k datu reportu
+                # Zahrneme uložený Ledger + Staging tabulku - Uložené prodeje
+                app_positions = {}
+                
+                # Započtení nákupů v Ledgeru (pouze do data vygenerování reportu)
+                for t, lots in self.ledger.items():
+                    for lot in lots:
+                        try:
+                            lot_d = datetime.strptime(lot["date"], "%Y-%m-%d").date()
+                            if lot_d <= report_date:
+                                app_positions[t] = app_positions.get(t, 0.0) + safe_float(lot.get("qty", 0))
+                        except: pass
+                
+                # Započtení nákupů právě přidaných do fronty
+                for item in self.staging_tree.get_children():
+                    vals = self.staging_tree.item(item)['values']
+                    t = str(vals[0])
+                    try:
+                        st_d = datetime.strptime(str(vals[1]), "%Y-%m-%d").date()
+                        if st_d <= report_date:
+                            app_positions[t] = app_positions.get(t, 0.0) + safe_float(str(vals[2]).replace(',', '.'))
+                    except: pass
+
+                # Odečtení historických prodejů
+                for sale in self.sales_history:
+                    try:
+                        sale_d = datetime.strptime(sale["sell_date"], "%Y-%m-%d").date()
+                        if sale_d <= report_date:
+                            t = sale["ticker"]
+                            app_positions[t] = app_positions.get(t, 0.0) - safe_float(sale.get("qty", 0))
+                    except: pass
+
+                # C) Porovnání a detekce chyb
+                # Projdeme všechny tickery, které se objevily buď v CSV nebo v naší evidenci
+                all_audited_tickers = set(list(ibkr_positions.keys()) + list(app_positions.keys()))
+                
+                for t in all_audited_tickers:
+                    ib_qty = ibkr_positions.get(t, 0.0)
+                    app_qty = app_positions.get(t, 0.0)
+                    
+                    # Pokud je rozdíl větší než drobná zaokrouhlovací odchylka (0.001 ks)
+                    if abs(ib_qty - app_qty) > 0.001:
+                        diff = app_qty - ib_qty
+                        # Přidána tečka do formátovacího předpisu (+,.3f)
+                        # Výsledek vyrobí formát: +1,234.567 -> následně replace změní na +1 234,567
+                        # Čísla naformátujeme individuálně, abychom nepoškodili tečku v názvu tickeru (t)
+                        aq_s = f"{app_qty:,.3f}".replace(',', ' ').replace('.', ',')
+                        iq_s = f"{ib_qty:,.3f}".replace(',', ' ').replace('.', ',')
+                        df_s = f"{diff:+,.3f}".replace(',', ' ').replace('.', ',')
+                        
+                        # Složíme finální řádek, kde t zůstane v původním formátu
+                        err_line = f"• {t}: V evidenci máte {aq_s}, broker hlásí {iq_s} (rozdíl {df_s} ks)"
+                        audit_errors.append(err_line)
+
+            # --- FINÁLNÍ ZOBRAZENÍ VÝSLEDKŮ UŽIVATELI ---
+            import_msg = ""
             if added_count > 0:
-                messagebox.showinfo("Import dokončen", f"Nalezeno a naimportováno {added_count} zcela nových nákupů z IBKR!\n\nObchody byly vloženy do čekací tabulky níže. Můžete je zkontrolovat a poté je trvale schválit kliknutím na oranžové tlačítko 'ULOŽIT VŠE DO PORTFOLIA'.")
+                import_msg = (f"Nalezeno a naimportováno {added_count} nových nákupů.\n"
+                              f"Nezapomeňte je dole potvrdit tlačítkem 'ULOŽIT VŠE'.")
             else:
-                messagebox.showinfo("Import dokončen", "Všechny nákupy obsažené ve výpisu už ve vašem portfoliu jsou (nebo jste vložili soubor obsahující jen prodeje).\n\nDo čekací fronty nebyly přidány žádné nové záznamy.")
+                import_msg = "Ve výpisu nebyly nalezeny žádné nové nákupy k importu."
+
+            if not audit_performed:
+                # Datum nenalezeno, zobrazíme jen výsledek importu
+                messagebox.showinfo("Výsledek importu", import_msg + "\n\n(Audit pozic nebyl proveden kvůli chybějícímu datu v CSV.)")
+            elif audit_errors:
+                # Našly se chyby - zobrazíme Varování (Warning)
+                audit_msg = ("\n\n⚠️ UPOZORNĚNÍ - AUDIT POZIC NAŠEL NESROVNALOSTI:\n"
+                             f"Váš stav k {report_date.strftime('%d.%m.%Y')} neodpovídá brokerovi:\n\n" + 
+                             "\n".join(audit_errors) + 
+                             "\n\nMožné příčiny:\n"
+                             "1. Máte v JSONu nákup navíc, který v CSV chybí.\n"
+                             "2. Udělali jste v minulosti prodej, který jste v appce nezaznamenali.\n"
+                             "3. Ručně zadané množství v Ledgeru obsahuje překlep.")
+                messagebox.showwarning("Výsledek importu a auditu", import_msg + audit_msg)
+            else:
+                # Vše sedí na kus přesně - zobrazíme potvrzení (Info)
+                success_msg = "\n\n✅ AUDIT POŘÁDKU: Vaše evidence k {report_date.strftime('%d.%m.%Y')} reportu přesně odpovídá stavu u brokera."
+                messagebox.showinfo("Výsledek importu", import_msg + success_msg)
 
         except Exception as e:
+            # Záchranná síť pro nečekané chyby (např. zamčený soubor, chyba oprávnění)
             messagebox.showerror("Chyba při čtení", f"Při zpracování CSV souboru došlo k nečekané chybě.\n\nDetail: {e}")
 
     def delete_staging_row(self, event):
