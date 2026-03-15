@@ -332,6 +332,11 @@ class CzechInvestorApp:
                     for t in TARGETS.keys():
                         if t not in ledger: ledger[t] =[]
 
+                    # Automatická oprava řazení u již existujících dat v JSONu.
+                    # Garantuje striktní FIFO chronologii hned po spuštění aplikace.
+                    for t in ledger:
+                        ledger[t].sort(key=lambda x: x.get("date", "1970-01-01"))
+
                     history = data.get("sales_history",[])
                     rates = data.get("uniform_rates", {})
                     
@@ -865,6 +870,9 @@ class CzechInvestorApp:
         tk.Button(edit_frame, text="↓ Přidat do seznamu k uložení", command=self.add_manual_entry, bg="#1565C0", fg="white", font=("Arial", 12, "bold")).grid(row=1, column=4, padx=20)
         tk.Label(edit_frame, text="(Klikni nahoře na řádek pro rychlé vyplnění)", bg="#E3F2FD", fg="grey", font=("Arial", 11)).grid(row=0, column=4)
 
+        # Tlačítko pro automatický import z CSV od IBKR
+        tk.Button(edit_frame, text="📥 Import nákupů\nIBKR (.csv)", command=self.import_ibkr_csv, bg="#FF9800", fg="black", font=("Arial", 12, "bold")).grid(row=0, column=5, rowspan=2, padx=(10, 5), sticky="nsew")
+
         # 3. Fronta pro finální uložení (Staging)
         final_frame = tk.LabelFrame(main_frame, text="3. Seznam realizovaných obchodů (Připraveno k zápisu)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
         final_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -1081,6 +1089,134 @@ class CzechInvestorApp:
         if remaining > 0.001:
             self.real_qty.insert(0, str(round(remaining, 3)))
 
+    def import_ibkr_csv(self):
+        from tkinter import filedialog
+        import csv
+        
+        filepath = filedialog.askopenfilename(
+            title="Vyberte CSV výpis (Activity Statement) z Interactive Brokers",
+            filetypes=(("CSV Soubory", "*.csv"), ("Všechny soubory", "*.*"))
+        )
+        if not filepath:
+            return
+            
+        def safe_float(val):
+            """Pomocná funkce pro bezpečný převod US formátu (IBKR)."""
+            try:
+                # IBKR v anglickém CSV používá čárku jako oddělovač tisíců (1,461.597).
+                # Musíme ji tedy smazat, ne nahrazovat za desetinnou tečku!
+                return float(str(val).replace(',', '').replace(' ', ''))
+            except ValueError:
+                return 0.0            
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+                
+            header_row = None
+            for row in rows:
+                if len(row) > 1 and row[0] == 'Trades' and row[1] == 'Header':
+                    header_row = row
+                    break
+                    
+            if not header_row:
+                messagebox.showerror("Neznámý formát CSV", "Vybraný soubor zřejmě není podporovaný výpis z IBKR.\n\nAplikace aktuálně podporuje výhradně standardní 'Activity Statement' od brokera Interactive Brokers (v anglickém jazyce).")
+                return
+            
+            try:
+                # Dynamicky najdeme pozice očekávaných sloupců
+                idx_desc = header_row.index('DataDiscriminator')
+                idx_asset = header_row.index('Asset Category')
+                idx_sym = header_row.index('Symbol')
+                idx_date = header_row.index('Date/Time')
+                idx_qty = header_row.index('Quantity')
+                idx_price = header_row.index('T. Price')
+            except ValueError as e:
+                messagebox.showerror("Chybný formát sloupců", f"Ve výpisu chybí očekávané sloupce (např. T. Price, Symbol, Date/Time).\nDetail: {e}")
+                return
+
+            known_symbols = list(TARGETS.keys()) + list(getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).keys())
+            
+            def map_sym(s):
+                if s in known_symbols: return s
+                if s + ".L" in known_symbols: return s + ".L"
+                if s + ".UK" in known_symbols: return s + ".UK"
+                return s
+
+            # --- KROK 1: Agregace nákupů z CSV podle klíče (Ticker, Datum) ---
+            csv_aggregated = {}
+            for row in rows:
+                if len(row) > idx_price and row[0] == 'Trades' and row[1] == 'Data':
+                    if row[idx_desc] == 'Order' and row[idx_asset] == 'Stocks':
+                        qty = safe_float(row[idx_qty])
+                        
+                        if qty > 0: 
+                            sym = map_sym(row[idx_sym])
+                            date_str = row[idx_date].split(',')[0].strip()
+                            try:
+                                parsed_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d")
+                            except ValueError:
+                                parsed_date = date_str 
+                            
+                            price = safe_float(row[idx_price])
+                            
+                            key = (sym, parsed_date)
+                            if key not in csv_aggregated:
+                                csv_aggregated[key] = {'qty': 0.0, 'total_value': 0.0}
+                            
+                            csv_aggregated[key]['qty'] += qty
+                            csv_aggregated[key]['total_value'] += qty * price
+
+            # --- KROK 2: Agregace existujících nákupů v JSON Ledgeru a Stagingu ---
+            existing_aggregated = {}
+            # Čtení už dříve uložených nákupů
+            for t, lots in self.ledger.items():
+                for lot in lots:
+                    d = lot.get("date")
+                    q = safe_float(lot.get("qty", 0))
+                    key = (t, d)
+                    existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
+                    
+            # Čtení toho, co zrovna čeká v tabulce dole před uložením
+            for item in self.staging_tree.get_children():
+                vals = self.staging_tree.item(item)['values']
+                t = str(vals[0])
+                d = str(vals[1])
+                q = safe_float(str(vals[2]).replace(',', '.'))
+                key = (t, d)
+                existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
+
+            # --- KROK 3: Porovnání a import pouze fyzicky chybějícího množství ---
+            added_count = 0
+            for (t, d), data in csv_aggregated.items():
+                csv_qty = data['qty']
+                csv_val = data['total_value']
+                
+                exist_qty = existing_aggregated.get((t, d), 0.0)
+                
+                # Zjistíme, kolik akcií za ten den nám v evidenci chybí
+                missing_qty = csv_qty - exist_qty
+                
+                # Tolerujeme mikroskopickou zaokrouhlovací odchylku
+                if missing_qty > 0.0001:
+                    # Spočítáme váženou průměrnou cenu (pouze pro informaci v UI)
+                    avg_price = csv_val / csv_qty if csv_qty > 0 else 0.0
+                    
+                    q_str = str(round(missing_qty, 4)).replace('.', ',')
+                    p_str = str(round(avg_price, 4)).replace('.', ',')
+                    
+                    self.staging_tree.insert("", "end", values=(t, d, q_str, p_str, "❌"))
+                    added_count += 1
+
+            # Vyhodnocení pro uživatele
+            if added_count > 0:
+                messagebox.showinfo("Import dokončen", f"Nalezeno a naimportováno {added_count} zcela nových nákupů z IBKR!\n\nObchody byly vloženy do čekací tabulky níže. Můžete je zkontrolovat a poté je trvale schválit kliknutím na oranžové tlačítko 'ULOŽIT VŠE DO PORTFOLIA'.")
+            else:
+                messagebox.showinfo("Import dokončen", "Všechny nákupy obsažené ve výpisu už ve vašem portfoliu jsou (nebo jste vložili soubor obsahující jen prodeje).\n\nDo čekací fronty nebyly přidány žádné nové záznamy.")
+
+        except Exception as e:
+            messagebox.showerror("Chyba při čtení", f"Při zpracování CSV souboru došlo k nečekané chybě.\n\nDetail: {e}")
+
     def delete_staging_row(self, event):
         item = self.staging_tree.selection()
         if item: self.staging_tree.delete(item)
@@ -1099,10 +1235,15 @@ class CzechInvestorApp:
             qty = float(str(vals[2]).replace(",", "."))
             price = str(vals[3]).replace(",", ".") 
 
-            if ticker not in self.ledger: self.ledger[ticker] = []
+            if ticker not in self.ledger: self.ledger[ticker] =[]
             
             self.ledger[ticker].append({"date": date_str, "qty": qty, "price_at_buy": price})
             count += 1
+
+        # Před uložením musíme celý ledger pro každý ticker znovu seřadit podle data,
+        # protože nově importované nákupy mohly být do seznamu připojeny mimo chronologické pořadí.
+        for t in self.ledger:
+            self.ledger[t].sort(key=lambda x: x.get("date", "1970-01-01"))
 
         self.save_data()
         for item in rows: self.staging_tree.delete(item)
