@@ -1322,7 +1322,7 @@ class CzechInvestorApp:
                 messagebox.showwarning("Výsledek importu a auditu", import_msg + audit_msg)
             else:
                 # Vše sedí na kus přesně - zobrazíme potvrzení (Info)
-                success_msg = "\n\n✅ AUDIT POŘÁDKU: Vaše evidence k {report_date.strftime('%d.%m.%Y')} reportu přesně odpovídá stavu u brokera."
+                success_msg = f"\n\n✅ AUDIT POŘÁDKU: Vaše evidence k {report_date.strftime('%d.%m.%Y')} reportu přesně odpovídá stavu u brokera."
                 messagebox.showinfo("Výsledek importu", import_msg + success_msg)
 
         except Exception as e:
