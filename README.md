@@ -65,7 +65,7 @@ Výchozí nastavení databáze je koncipováno jako **"all-weather dividend grow
 
 > [!WARNING]
 > **INVESTIČNÍ RIZIKA:**
-> * **Koncentrace v BDC:** Tituly jako HTGC a MAIN tvoří značnou část příjmů. Jsou citlivé na úrokové sazby a stav ekonomiky USA.
+> * **Koncentrace v BDC:** Tituly jako HTGC a MAIN tvoří značnou část příjmů. Jsou citlivé na úrokové sazby a stav ekonomiky USA. HTGC čelí zvýšenému riziku kvůli podezřením na nadhodnocování části portfolia, což může vést k poklesu příjmů, regulatorním zásahům a případnému omezení dividend.
 > * **Měnové riziko:** Investujete v cizích měnách. Posílení CZK vůči USD/GBP technicky snižuje hodnotu vašeho portfolia v korunách.
 > * **Závislost na datech:** Aplikace využívá neoficiální API Yahoo Finance. Aplikace má sice robustní *spot-check*, ale dlouhodobý výpadek serverů může dočasně omezit funkce analýzy.
 
