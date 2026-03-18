@@ -343,6 +343,7 @@ class CzechInvestorApp:
                     # Načtení custom limitů (s fallbackem na globální konstanty)
                     self.custom_min_w = float(data.get("min_w", MIN_W))
                     self.custom_max_w = float(data.get("max_w", MAX_W))
+                    self.real_dividends = data.get("real_dividends",[])
                     
                     return ledger, history, rates
             except Exception as e: 
@@ -362,7 +363,8 @@ class CzechInvestorApp:
             "stock_db": getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB),
             "ethical_filters": getattr(self, 'ethical_filters', {k: True for k in TAGS}),
             "min_w": getattr(self, 'custom_min_w', MIN_W),
-            "max_w": getattr(self, 'custom_max_w', MAX_W)
+            "max_w": getattr(self, 'custom_max_w', MAX_W),
+            "real_dividends": getattr(self, 'real_dividends',[])
         }
         with open(PORTFOLIO_FILE, "w") as f: json.dump(data, f, indent=4)
 
@@ -1228,6 +1230,66 @@ class CzechInvestorApp:
                     added_count += 1
 
             # =================================================================
+            # KROK 3B: ZPRACOVÁNÍ SKUTEČNÝCH DIVIDEND A DANÍ Z CSV
+            # =================================================================
+            parsed_dividends = {}
+            
+            # Projdeme celé CSV a najdeme sekce "Dividends" a "Withholding Tax"
+            for row in rows:
+                if len(row) > 5 and row[0] == 'Dividends' and row[1] == 'Data' and not row[2].startswith('Total'):
+                    currency = row[2]
+                    date_str = row[3]
+                    desc = row[4]
+                    amount = safe_float(row[5])
+                    
+                    # Extrakce tickeru (např. "JNJ(US4781601046) Cash Dividend..." -> "JNJ")
+                    raw_ticker = desc.split('(')[0].split(' ')[0].strip()
+                    sym = map_sym(raw_ticker)
+                    
+                    key = (sym, date_str)
+                    if key not in parsed_dividends:
+                        parsed_dividends[key] = {'gross': 0.0, 'tax': 0.0, 'currency': currency}
+                    parsed_dividends[key]['gross'] += amount
+
+                elif len(row) > 5 and row[0] == 'Withholding Tax' and row[1] == 'Data' and not row[2].startswith('Total'):
+                    currency = row[2]
+                    date_str = row[3]
+                    desc = row[4]
+                    amount = safe_float(row[5])
+                    
+                    raw_ticker = desc.split('(')[0].split(' ')[0].strip()
+                    sym = map_sym(raw_ticker)
+                    
+                    key = (sym, date_str)
+                    if key not in parsed_dividends:
+                        parsed_dividends[key] = {'gross': 0.0, 'tax': 0.0, 'currency': currency}
+                    # Daně jsou v CSV záporné, vezmeme absolutní hodnotu
+                    parsed_dividends[key]['tax'] += abs(amount)
+
+            # Příprava paměti a deduplikace zjištěných dividend
+            if not hasattr(self, 'real_dividends'):
+                self.real_dividends =[]
+                
+            added_divs = 0
+            for (sym, date_str), data in parsed_dividends.items():
+                # Zkontrolujeme, jestli přesně tuto výplatu v JSONu už nemáme
+                exists = any(d['ticker'] == sym and d['date'] == date_str for d in self.real_dividends)
+                if not exists:
+                    self.real_dividends.append({
+                        "ticker": sym,
+                        "date": date_str,
+                        "gross": data['gross'],
+                        "tax": data['tax'],
+                        "currency": data['currency']
+                    })
+                    added_divs += 1
+            
+            # Pokud jsme našli nové dividendy, rovnou je chronologicky seřadíme a zapíšeme do JSONu
+            if added_divs > 0:
+                self.real_dividends.sort(key=lambda x: x['date'])
+                self.save_data()
+
+            # =================================================================
             # KROK 4: HLOUBKOVÝ AUDIT (KONTROLA OTEVŘENÝCH POZIC)
             # =================================================================
             audit_errors = []
@@ -1301,11 +1363,14 @@ class CzechInvestorApp:
 
             # --- FINÁLNÍ ZOBRAZENÍ VÝSLEDKŮ UŽIVATELI ---
             import_msg = ""
-            if added_count > 0:
-                import_msg = (f"Nalezeno a naimportováno {added_count} nových nákupů.\n"
-                              f"Nezapomeňte je dole potvrdit tlačítkem 'ULOŽIT VŠE'.")
+            if added_count > 0 or added_divs > 0:
+                import_msg = f"Nalezeno a naimportováno:\n"
+                if added_count > 0:
+                    import_msg += f"• {added_count} nových nákupů akcií (čekají dole na potvrzení)\n"
+                if added_divs > 0:
+                    import_msg += f"• {added_divs} záznamů o skutečných dividendách (rovnou uloženo)\n"
             else:
-                import_msg = "Ve výpisu nebyly nalezeny žádné nové nákupy k importu."
+                import_msg = "Ve výpisu nebyly nalezeny žádné nové nákupy ani dividendy k importu."
 
             if not audit_performed:
                 # Datum nenalezeno, zobrazíme jen výsledek importu
@@ -1658,13 +1723,56 @@ class CzechInvestorApp:
                 growth_factor = 1.0
                 tax_rate = 0.0 if CURRENCIES.get(t, "USD") == "GBP" else 0.15 
                 
-                # --- ZPRACOVÁNÍ POTVRZENÝCH DIVIDEND ---
+                # --- 1. ZPRACOVÁNÍ SKUTEČNÝCH DIVIDEND (Z CSV) ---
+                # Skutečná data z CSV se vytáhnou POUZE pro reálné portfolio
+                if mode == "real":
+                    real_divs_year =[d for d in getattr(self, 'real_dividends', []) if d['date'].startswith(str(current_year)) and d['ticker'] == t]
+                    for rd in real_divs_year:
+                        pay_date = datetime.strptime(rd['date'], "%Y-%m-%d").date()
+                        confirmed_months.add(pay_date.month) # Zablokuje projekci pro tento měsíc
+                        
+                        gross_val = rd['gross']
+                        tax_val = rd['tax']
+                        currency = rd.get('currency', 'USD')
+                        
+                        # Přepočet do CZK hrubého a čistého
+                        fx_rate = fx.get(currency, 23.0)
+                        czk_gross = gross_val * fx_rate
+                        czk_net = (gross_val - tax_val) * fx_rate
+                        
+                        ticker_dividend_totals[t] = ticker_dividend_totals.get(t, 0) + czk_gross
+                        
+                        txt = f"{gross_val:.2f} {currency}".replace('.', ',')
+                        calendar_rows.append({
+                            "date": pay_date, 
+                            "values": (pay_date.strftime("%Y-%m-%d"), t, txt, "✅ Vyplaceno (IBKR)", f"{czk_gross:.0f} Kč".replace('.', ',')),
+                            "czk_gross": czk_gross, 
+                            "czk_net": czk_net
+                        })
+                else:
+                    # V teoretickém módu seznam vyprázdníme, aby se fallback z Yahoo aplikoval na celý rok
+                    real_divs_year =[]
+
+                # --- 2. ZPRACOVÁNÍ POTVRZENÝCH DIVIDEND (Z YAHOO FINANCE JAKO FALLBACK/TEORIE) ---
                 if not divs_current_yr.empty:
                     latest_conf_date = divs_current_yr.index[-1]
                     latest_conf_amt = divs_current_yr.iloc[-1]
                     
                     for d_date, amount in divs_current_yr.items():
-                        d_val = d_date.date() # Toto je EX-DATE!
+                        d_val = d_date.date() # Toto je EX-DATE z Yahoo
+                        
+                        # KONTROLA PŘEKRYVU (pouze pro reálné portfolio)
+                        # (Pay-Date z CSV bývá typicky 0 až 90 dní po Ex-Date z Yahoo), přeskočíme to.
+                        is_covered = False
+                        if mode == "real":
+                            for rd in real_divs_year:
+                                rd_date = datetime.strptime(rd['date'], "%Y-%m-%d").date()
+                                if 0 <= (rd_date - d_val).days <= 90:
+                                    is_covered = True
+                                    break
+                                    
+                        if is_covered: continue
+                        
                         confirmed_months.add(d_val.month)
                         
                         # Matematika nároku na dividendu (Nákup musí být PŘED ex-datem)
@@ -3135,11 +3243,39 @@ class CzechInvestorApp:
         # Sekce Dividend (§8)
         div_data = {"USA": [], "UK":[]}
         total_div_usa_gross = 0.0
+        total_usa_tax_czk = 0.0 # Měníme odhadovaných 15 % na exaktně vypočítanou daň
         total_div_uk_gross = 0.0
         
-        all_tickers = set(list(self.ledger.keys()) +[s['ticker'] for s in self.sales_history])
+        all_tickers = set(list(self.ledger.keys()) + [s['ticker'] for s in self.sales_history])
+        
+        # --- 1. ZPRACOVÁNÍ SKUTEČNÝCH DIVIDEND (Z IBKR CSV) ---
+        # Filtrujeme jen dividendy z daného roku
+        real_divs_year =[d for d in getattr(self, 'real_dividends', []) if d['date'].startswith(str(year_to_report))]
+        
+        for rd in real_divs_year:
+            t = rd['ticker']
+            gross_czk = rd['gross'] * rates.get(rd.get('currency', 'USD'), 1.0)
+            tax_czk = rd['tax'] * rates.get(rd.get('currency', 'USD'), 1.0)
+            
+            country = self.get_country_for_ticker(t)
+            if country == "USA": 
+                total_div_usa_gross += gross_czk
+                total_usa_tax_czk += tax_czk
+                div_data["USA"].append({
+                    "Datum": rd['date'], "Ticker": f"{t} (Přesně z CSV)",
+                    "Hrubá": f"{gross_czk:,.0f}".replace(",", " "),
+                    "Sražená": f"{tax_czk:,.0f}".replace(",", " ")
+                })
+            else: 
+                total_div_uk_gross += gross_czk
+                div_data["UK"].append({
+                    "Datum": rd['date'], "Ticker": f"{t} (Přesně z CSV)",
+                    "Hrubá": f"{gross_czk:,.0f}".replace(",", " "),
+                    "Sražená": f"{tax_czk:,.0f}".replace(",", " ")
+                })
+
+        # --- 2. ZPRACOVÁNÍ YF DIVIDEND (FALLBACK PRO CHYBĚJÍCÍ OBDOBÍ) ---
         for t in all_tickers:
-            # --- Ochrana akumulačních ETF ---
             meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
             if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
                 continue
@@ -3149,9 +3285,25 @@ class CzechInvestorApp:
                 year_divs = divs[divs.index.year == year_to_report]
                 if year_divs.empty: continue
                 
-                for date, amount in year_divs.items():
-                    div_date_str = date.strftime("%Y-%m-%d")
+                for d_date, amount in year_divs.items():
+                    div_date_str = d_date.strftime("%Y-%m-%d")
                     
+                    # KONTROLA PŘEKRYVU: Yahoo vrací 'Ex-Date', CSV vrací 'Pay-Date'.
+                    # Pokud CSV obsahuje k danému tickeru výplatu v rozmezí 0 až 90 dní 
+                    # po Ex-Date z Yahoo, znamená to, že data pro tuto dividendu už máme.
+                    is_covered = False
+                    for rd in real_divs_year:
+                        if rd['ticker'] == t:
+                            rd_date = datetime.strptime(rd['date'], "%Y-%m-%d")
+                            delta_days = (rd_date.date() - d_date.date()).days
+                            if 0 <= delta_days <= 90:
+                                is_covered = True
+                                break
+                                
+                    if is_covered:
+                        continue # Přeskakujeme, máme přesná data z CSV
+                    
+                    # Jinak počítáme odhad z Yahoo (pokud chybí import za určité měsíce)
                     qty_held = sum(l['qty'] for l in self.ledger.get(t,[]) if l['date'] < div_date_str)
                     qty_sold_later = sum(s['qty'] for s in self.sales_history if s['ticker'] == t 
                                          and s['buy_date'] < div_date_str and s['sell_date'] >= div_date_str)
@@ -3163,18 +3315,18 @@ class CzechInvestorApp:
                         fx = rates.get(self.get_currency_for_ticker(t), 1.0)
                         gross_div_czk = total_qty * amount * fx
                         
-                        # Použití detektoru země místo měny
                         country = self.get_country_for_ticker(t)
                         
                         if country == "USA": 
                             total_div_usa_gross += gross_div_czk
                             withheld = gross_div_czk * 0.15 
+                            total_usa_tax_czk += withheld
                         else: 
                             total_div_uk_gross += gross_div_czk
                             withheld = 0.0 
                             
                         div_data[country].append({
-                            "Datum": div_date_str, "Ticker": t,
+                            "Datum": div_date_str, "Ticker": f"{t} (Odhadováno)",
                             "Hrubá": f"{gross_div_czk:,.0f}".replace(",", " "),
                             "Sražená": f"{withheld:,.0f}".replace(",", " ")
                         })
@@ -3186,7 +3338,7 @@ class CzechInvestorApp:
             "p10_profit": max(0, total_taxable_income - total_taxable_expense),
             "exempt_count": exempt_count,
             "div_usa_gross": total_div_usa_gross,
-            "div_usa_withheld": total_div_usa_gross * 0.15,
+            "div_usa_withheld": total_usa_tax_czk, # Nově používáme přesnou zaplacenou daň
             "div_uk_gross": total_div_uk_gross,
             "div_uk_owed": total_div_uk_gross * 0.15 
         }
