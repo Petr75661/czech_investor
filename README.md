@@ -60,12 +60,12 @@ Výchozí nastavení databáze je koncipováno jako **"all-weather dividend grow
 | :--- | :--- | :--- |
 | **Technologický růst** | Nízká dividenda, exponenciální růst kapitálu. | `AAPL`, `AVGO`, `CAT` |
 | **Defenzivní stabilita** | Odolnost v recesi, dlouhodobě rostoucí výplaty. | `JNJ`, `ABBV`, `PEP`, `ULVR.L`, `NEE`, `MRK` |
-| **Vysoký cash-flow** | BDC a REIT tituly s masivním výnosem (6–10 %). | `MAIN`, `HTGC`, `OHI`, `O` |
+| **Vysoký cash-flow** | BDC a REIT tituly s masivním výnosem (6–10 %). | `MAIN`, `ARCC`, `OHI`, `O` |
 | **Zahraniční diverzifikace** | Expozice vůči britské libře (GBP). | `LGEN.L`, `TRIG.L` |
 
 > [!WARNING]
 > **INVESTIČNÍ RIZIKA:**
-> * **Koncentrace v BDC:** Tituly jako HTGC a MAIN tvoří značnou část příjmů. Jsou citlivé na úrokové sazby a stav ekonomiky USA. HTGC čelí zvýšenému riziku kvůli podezřením na nadhodnocování části portfolia, což může vést k poklesu příjmů, regulatorním zásahům a případnému omezení dividend.
+> * **Koncentrace v BDC:** Tituly jako ARCC a MAIN tvoří značnou část příjmů. Jsou citlivé na úrokové sazby a stav ekonomiky USA.
 > * **Měnové riziko:** Investujete v cizích měnách. Posílení CZK vůči USD/GBP technicky snižuje hodnotu vašeho portfolia v korunách.
 > * **Závislost na datech:** Aplikace využívá neoficiální API Yahoo Finance. Aplikace má sice robustní *spot-check*, ale dlouhodobý výpadek serverů může dočasně omezit funkce analýzy.
 

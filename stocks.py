@@ -51,7 +51,7 @@ TARGETS = {
     "O":      0.042072155640151904, # Reality
     "ABBV":   0.05092109039456007,  # Farmaceutický gigant
     "MAIN":   0.09148972366558898,  # Business Development Company (úvěry firmám)
-    "HTGC":   0.08648783099862456,  # BDC fond (technologie a life-sciences)
+    "ARCC":   0.08648783099862456,  # BDC fond
     "OHI":    0.08808725857018594,  # Zdravotnický REIT (domovy s pečovatelskou službou)
     "AVGO":   0.09011472979451929,  # Broadcom
     "MRK":    0.08257822223712338,  # Merck - biotechnologie
@@ -61,7 +61,7 @@ TARGETS = {
 CURRENCIES = {
     "LGEN.L": "GBP", "ULVR.L": "GBP", "TRIG.L": "GBP", 
     "JNJ": "USD", "NEE": "USD", "PEP": "USD", "CAT": "USD", "AAPL": "USD",
-    "O": "USD", "ABBV": "USD", "MAIN": "USD", "HTGC": "USD", "OHI": "USD", "AVGO": "USD", "MRK": "USD",
+    "O": "USD", "ABBV": "USD", "MAIN": "USD", "ARCC": "USD", "OHI": "USD", "AVGO": "USD", "MRK": "USD",
 }
 
 # Pravidla pro hodnocení "zdraví" portfolia (použito v Editoru akcií)
@@ -113,6 +113,7 @@ DEFAULT_STOCK_DB = {
     # -- FINANCE & BDC (VÝNOS) --
     "MAIN":   {"name": "Main Street Capital", "sector": "Financial", "tags":[], "yield": 6.2, "growth": 18.0},
     "HTGC":   {"name": "Hercules Capital", "sector": "Financial", "tags":[], "yield": 10.5, "growth": 12.0},
+    "ARCC":   {"name": "Ares Capital Corporation", "sector": "Financial", "tags":[], "yield": 10.41, "growth": 10.2651},
     "LGEN.L": {"name": "Legal & General", "sector": "Financial", "tags":[], "yield": 8.5, "growth": -5.0},
     "MNG.L":  {"name": "M&G PLC", "sector": "Financial", "tags":[], "yield": 9.5, "growth": 2.0},
     "JPM":    {"name": "JPMorgan Chase", "sector": "Financial", "tags":[], "yield": 2.3, "growth": 45.0},
@@ -1823,7 +1824,7 @@ class CzechInvestorApp:
                     if closest_last and matched_d_last:
                         trend_ratio = latest_conf_amt / closest_last
                         
-                        # --- Ochrana proti speciálním dividendám (MAIN, HTGC) ---
+                        # --- Ochrana proti speciálním dividendám (MAIN, HTGC, ARCC) ---
                         # Pokud je skok větší než 25 %, pravděpodobně se srovnává běžná dividenda
                         # se speciální. V takovém případě plošný růstový faktor konzervativně anulujeme (1.0).
                         if trend_ratio > 1.25 or trend_ratio < 0.5:
