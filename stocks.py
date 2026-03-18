@@ -2150,6 +2150,8 @@ class CzechInvestorApp:
         self.canvas_tune.mpl_connect('axes_leave_event', lambda e: self._hide_tooltip())
         # Skrytí tooltipu při ztrátě fokusu okna (Alt+Tab do jiné aplikace)
         self.root.bind("<FocusOut>", lambda e: self._hide_tooltip())
+        # Zpracování dvojkliku na koláčový graf
+        self.canvas_tune.mpl_connect('button_press_event', self.on_click_pie)
         
         self.simulated_portfolios = None
         self.sim_metrics = None
@@ -2216,6 +2218,32 @@ class CzechInvestorApp:
         for s in self.sliders.values(): s.config(state="disabled")
         self.run_tuner_with_loading(lambda: self.initialize_tuner_data(force_download=False), "Přepočítávám simulace...")
 
+    def _evaluate_dividend_safety(self, sector, raw_yield, payout):
+        """Centrální metoda pro posouzení bezpečnosti dividendy a detekci anomálií."""
+        if sector in ["Real Estate", "Financial", "Financial Services"]:
+            # U BDC a REITů tvoří rozdíl mezi GAAP ziskem a reálným cash-flow propastný rozdíl.
+            # Cokoliv nad 100 % (často nerealizované účetní ztráty či odpisy) označíme za anomálii.
+            limit = 1.0
+            anomaly_threshold = 1.0
+        elif sector == "Consumer Defensive":
+            # Pro Consumer Defensive (PEP, ULVR) dáme toleranci do 95 %, protože mají extrémně stabilní cash-flow.
+            limit = 0.95
+            anomaly_threshold = 2.0
+        else:
+            limit = 0.9
+            anomaly_threshold = 2.0
+            
+        # Účetní anomálie z odpisů nemovitostí a nerealizovaných ztrát.
+        # V takovém případě věříme reálnému cash-flow a dividendu nepenalizujeme.
+        if payout > anomaly_threshold:
+            safe_yield = raw_yield
+            effective_payout = -1 # Značka pro Tooltip, že data z Yahoo jsou účetně zkreslená
+        else:
+            safe_yield = raw_yield if payout <= limit else raw_yield * DIV_YIELD_DROP
+            effective_payout = payout
+            
+        return safe_yield, effective_payout, limit
+        
     def initialize_tuner_data(self, force_download=True, n_sims=None, auto_improve=False):
         import time 
         if n_sims is None:
@@ -2307,29 +2335,17 @@ class CzechInvestorApp:
                     meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
                     sector = meta.get("sector", "Unknown")
                     
-                    # REITs (Real Estate) a BDC (Financial) mají ze zákona uměle vysoký výplatní poměr.
-                    # Pro Consumer Defensive (PEP, ULVR) dáme toleranci do 95 %, protože mají extrémně stabilní cash-flow.
-                    if sector in ["Real Estate", "Financial"]:
-                        limit = 1.5
-                    elif sector == "Consumer Defensive":
-                        limit = 0.95
-                    else:
-                        limit = 0.9
-                    
-                    # Účetní anomálie z odpisů nemovitostí a akvizic (Payout > 200 %, např. O, ABBV).
-                    # V takovém případě věříme reálnému cash-flow a dividendu nepenalizujeme.
-                    if payout > 2.0:
-                        safe_yield = raw_yield
-                        payout = -1 # Značka pro Tooltip, že data jsou účetně zkreslená
-                    else:
-                        safe_yield = raw_yield if payout <= limit else raw_yield * DIV_YIELD_DROP
+                    # U specifických sektorů upravíme limity a detekci účetních anomálií
+                    # Výpočet bezpečnosti dividendy
+                    safe_yield, payout, limit = self._evaluate_dividend_safety(sector, raw_yield, payout)
                         
                     safe_divs.append(safe_yield)
                     
                     self.tuner_fundamentals[t] = {
                         "payout_ratio": payout,
                         "raw_yield": raw_yield,
-                        "safe_yield": safe_yield
+                        "safe_yield": safe_yield,
+                        "limit": limit
                     }
                     
                     # 2. Cílový růst (Analytici vs. Historie)
@@ -2950,12 +2966,19 @@ class CzechInvestorApp:
                 sim_curve = norm_curve * scaling_factor
 
                 # --- REKONSTRUKCE REÁLNÉHO VÝVOJE (Modrá čára) ---
-                # Vytvoříme matici množství (počet kusů v čase pro každý ticker)
                 qty_matrix = pd.DataFrame(0.0, index=hist_prices.index, columns=all_tickers)
+                
+                # A) Přičteme aktuálně držené (otevřené) pozice
                 for t, lots in ledger_dt.items():
                     for lot in lots:
-                        # Od data nákupu dále přičteme množství k danému tickeru
                         qty_matrix.loc[lot['date']:, t] += lot['qty']
+                        
+                # B) Přičteme i historické nákupy, které už byly prodány
+                # Od data nákupu do data prodeje jsme je vlastnili, pak jejich počet klesá
+                for s in sales_dt:
+                    t = s['ticker']
+                    qty_matrix.loc[s['buy_date']:, t] += s['qty']
+                    qty_matrix.loc[s['sell_date']:, t] -= s['qty']
                 
                 # Výpočet reálné hodnoty portfolia v CZK den po dni
                 real_portfolio_curve = pd.Series(0.0, index=hist_prices.index)
@@ -2967,7 +2990,7 @@ class CzechInvestorApp:
                         fx_val = fx.get(self.get_currency_for_ticker(t), 23.0)
                         real_portfolio_curve += qty_matrix[t] * hist_prices[t] * p_factor * fx_val
 
-                # --- VYKRESLENÍ ---
+                # --- VYKRESLENÍ PRVNÍHO GRAFU (Čáry) ---
                 self.ax1.clear()
                 
                 if has_buys:
@@ -2979,12 +3002,11 @@ class CzechInvestorApp:
                     # Ořezáváme data před prvním nákupem, aby graf nezačínal na nule v roce 2021
                     real_data_to_plot = real_portfolio_curve[real_portfolio_curve.index >= first_buy_dt]
                     self.ax1.plot(real_data_to_plot.index, real_data_to_plot.values, 
-                                  color='#1976D2', linewidth=2, label="Reálné portfolio (vč. nákupů)")
+                                  color='#1976D2', linewidth=2, label="Reálné portfolio (vč. nákupů a prodejů)")
                     
                     self.ax1.axvline(x=first_buy_dt, color='red', linestyle='-', alpha=0.4)
                 else:
                     self.ax1.plot(sim_curve.index, sim_curve.values, color='grey', linestyle='--', alpha=0.6, label="Simulace")
-
                     
                 self.ax1.set_title("Vývoj hodnoty portfolia při reinvestici dividend (simulace a realita)")
                 self.ax1.grid(True, linestyle='--', alpha=0.5)
@@ -2994,7 +3016,6 @@ class CzechInvestorApp:
                 # inteligentní popisky osy Y
                 from matplotlib.ticker import FuncFormatter
                 def custom_formatter(x, pos):
-                    # Zabrání vědecké notaci (1e6) a vytvoří hezké české formátování s čárkami
                     if abs(x) >= 1000000: return f'{x*1e-6:.1f} mil.'.replace('.', ',')
                     elif abs(x) >= 1000: return f'{x*1e-3:.0f} tis.'.replace('.', ',')
                     return f'{x:.0f}'
@@ -3002,6 +3023,7 @@ class CzechInvestorApp:
                 # Aplikováno na osu ihned po vyčištění grafu
                 self.ax1.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
 
+                # --- VYKRESLENÍ DRUHÉHO GRAFU (Roční sloupce) ---
                 years = sorted(list(set(hist_prices.index.year)))
                 growth_vals, div_vals, totals, colors, labels = [], [], [], [],[]
                 div_history = {t:[] for t in all_tickers}
@@ -3011,22 +3033,40 @@ class CzechInvestorApp:
                 
                 for y in years:
                     y_start, y_end = f"{y}-01-01", f"{y}-12-31"
-                    sub_curve = sim_curve.loc[y_start:y_end]
-                    if sub_curve.empty: continue
-
-                    val_start, val_end = sub_curve.iloc[0], sub_curve.iloc[-1]
                     
-                    buys_cost = sum(float(l['price_at_buy']) * l['qty'] * fx.get(CURRENCIES.get(t, "USD"), 23.0) 
-                                    for t, lots in self.ledger.items() for l in lots if l['date'].startswith(str(y)))
-                    sales_income = sum(s['sell_price'] * s['qty'] * fx.get(s.get('currency', 'USD'), 23.0) 
+                    # Načtení hodnot z křivek pro daný rok
+                    sub_sim = sim_curve.loc[y_start:y_end]
+                    if sub_sim.empty: continue
+                    sim_v_start, sim_v_end = sub_sim.iloc[0], sub_sim.iloc[-1]
+                    
+                    sub_real = real_portfolio_curve.loc[y_start:y_end]
+                    real_v_start = sub_real.iloc[0] if not sub_real.empty else 0.0
+                    real_v_end = sub_real.iloc[-1] if not sub_real.empty else 0.0
+
+                    # 1. Výpočet Cash-Flow za daný rok (Vklady a Výběry)
+                    buys_cost = 0.0
+                    # Započteme nákupy, které stále držíme
+                    for t, lots in self.ledger.items():
+                        for l in lots:
+                            if l['date'].startswith(str(y)):
+                                buys_cost += float(l['price_at_buy']) * l['qty'] * fx.get(self.get_currency_for_ticker(t), 23.0)
+                    
+                    # Započteme i nákupy, které jsme už prodali (musí být v nákladech)
+                    for s in self.sales_history:
+                        if s['buy_date'].startswith(str(y)):
+                            buys_cost += float(s['buy_price']) * s['qty'] * fx.get(self.get_currency_for_ticker(s['ticker']), 23.0)
+                            
+                    # Příjmy z prodejů
+                    sales_income = sum(s['sell_price'] * s['qty'] * fx.get(self.get_currency_for_ticker(s['ticker']), 23.0) 
                                        for s in self.sales_history if s['sell_date'].startswith(str(y)))
                     
+                    # 2. Výpočet dividend
                     year_divs = 0
                     for t in all_tickers:
                         # --- Ochrana akumulačních ETF ---
                         meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
                         if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
-                            div_history[t].append(0) # Do grafu vrstev vložíme nulu
+                            div_history[t].append(0)
                             continue
 
                         t_div = 0 
@@ -3038,7 +3078,7 @@ class CzechInvestorApp:
                                 if not has_buys or y < first_buy_year:
                                     q = sum(l['qty'] for l in ledger_dt.get(t,[]))
                                 else:
-                                    q = sum(l['qty'] for l in ledger_dt.get(t, []) if l['date'] < d_s)
+                                    q = sum(l['qty'] for l in ledger_dt.get(t,[]) if l['date'] < d_s)
                                     q += sum(s['qty'] for s in sales_dt if s['ticker'] == t 
                                              and s['buy_date'] < d_s and s['sell_date'] >= d_s)
                                 currency = self.get_currency_for_ticker(t)
@@ -3047,26 +3087,27 @@ class CzechInvestorApp:
                         year_divs += t_div
                         div_history[t].append(t_div) 
 
+                    # 3. Finální výpočet PnL (Zisku a Ztráty)
                     # total_pnl je přesný Total Return vč. reinvestic (protože používáme upravené ceny).
                     # growth_only je vizuální "zbytek", aby se po nasčítání se žlutým sloupcem 
                     # trefila přesná výška Total Returnu.
                     if not has_buys or y < first_buy_year:
-                        total_pnl = val_end - val_start
+                        # SIMULACE (Šedé sloupce - žádné peněžní toky se nekonají)
+                        total_pnl = sim_v_end - sim_v_start
                         growth_only = total_pnl - year_divs
                         colors.append('grey')
-                        base = val_start if val_start > 0 else (val_end / 1.1)
-                        
-                    elif y == first_buy_year:
-                        total_pnl = (val_end + sales_income) - buys_cost
-                        growth_only = total_pnl - year_divs
-                        colors.append('#4CAF50' if total_pnl >= 0 else '#E53935')
-                        base = buys_cost
+                        base = sim_v_start if sim_v_start > 0 else (sim_v_end / 1.1)
                         
                     else:
-                        total_pnl = (val_end + sales_income) - (val_start + buys_cost)
+                        # REALITA (Zelené/Červené sloupce - zohledněn prodej i nákup)
+                        # Vzorec: (Konečná hodnota - Počáteční hodnota) + Příjmy z prodejů - Výdaje za nákupy
+                        total_pnl = (real_v_end - real_v_start) + sales_income - buys_cost
+                        
                         growth_only = total_pnl - year_divs
                         colors.append('#4CAF50' if total_pnl >= 0 else '#E53935')
-                        base = val_start
+                        
+                        base = real_v_start + buys_cost
+                        if base == 0: base = 1 # Ochrana proti dělení nulou
 
                     growth_vals.append(growth_only)
                     div_vals.append(year_divs)
@@ -4228,13 +4269,8 @@ class CzechInvestorApp:
                         meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(ticker, {})
                         sector = meta.get("sector", "Unknown")
                         
-                        # --- SYNCHRONIZACE LIMITŮ S VÝPOČETNÍM JÁDREM ---
-                        if sector in ["Real Estate", "Financial"]:
-                            limit = 1.5
-                        elif sector == "Consumer Defensive":
-                            limit = 0.95 # PepsiCo (94%) se nyní vejde do limitu
-                        else:
-                            limit = 0.9
+                        # Graf si přečte limit přímo z paměti výpočetního jádra
+                        limit = fund.get('limit', 0.9)
                         
                         if fund['payout_ratio'] == -1:
                             target_text += f"\n\nℹ️ Payout poměr ignorován\n(účetní anomálie zisku)"
@@ -4272,6 +4308,152 @@ class CzechInvestorApp:
         """Skryje plovoucí okénko. Bezpečně ošetřeno pro volání z FocusOut událostí."""
         if getattr(self, 'pie_tooltip', None): 
             self.pie_tooltip.withdraw() # Skryje okénko, ale nezničí ho
+
+    def on_click_pie(self, event):
+        """Detekuje dvojklik myší nad výsečí koláčového grafu (pouze pro levý graf vah)."""
+        # Ignorujeme obyčejné kliknutí, zajímá nás jen dvojklik
+        if not event.dblclick:
+            return
+        # Reagujeme pouze na kliknutí do hlavního koláčového grafu "Rozložení vah"
+        if event.inaxes != self.ax_pie:
+            return
+        # Během načítání/simulace nedovolíme interakci
+        if getattr(self, 'tuner_loading_state', {}).get("is_loading"):
+            return
+            
+        # Zakázání dvojkliku, pokud se uživatel dívá na "base" portfolio
+        if getattr(self, 'chart_view_var', None) and self.chart_view_var.get() == "base":
+            return
+            
+        if hasattr(self, 'wedges_weights'):
+            for i, wedge in enumerate(self.wedges_weights):
+                if wedge.contains(event)[0]:
+                    ticker = self.ordered_tickers[i]
+                    self._open_fix_weight_dialog(ticker, i)
+                    break
+
+    def _open_fix_weight_dialog(self, ticker, idx):
+        """Otevře okno pro zadání a validaci fixní váhy dané akcie."""
+        if getattr(self, 'sim_weights', None) is None: return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Fixovat {ticker}")
+        
+        # Otevření dialogu hned u kurzoru myši
+        x = self.root.winfo_pointerx() + 15
+        y = self.root.winfo_pointery() + 15
+        dialog.geometry(f"+{x}+{y}")
+        dialog.transient(self.root)
+        dialog.grab_set() # Zablokuje interakci s hlavním oknem, dokud se toto nezavře
+        dialog.config(bg="#FFF8E1")
+        
+        tk.Label(dialog, text=f"Zadejte požadovanou fixní váhu pro {ticker} (v %):", 
+                 font=("Arial", 12, "bold"), bg="#FFF8E1").pack(pady=(15, 5), padx=20)
+        
+        # Přečteme aktuálně zobrazenou váhu v grafu
+        current_w = self.sim_weights[self.current_sim_idx][idx] * 100
+        
+        entry_w = tk.Entry(dialog, font=("Arial", 14), width=10, justify="center")
+        entry_w.insert(0, f"{current_w:.1f}".replace('.', ','))
+        entry_w.pack(pady=10)
+        entry_w.focus_set()
+        entry_w.select_range(0, tk.END) # Automaticky označí text pro snadné přepsání
+        
+        def apply_weight(event=None):
+            val_str = entry_w.get().strip()
+            try:
+                new_w_pct = float(val_str.replace(',', '.'))
+            except ValueError:
+                messagebox.showerror("Chyba", "Zadejte platné číslo.", parent=dialog)
+                return
+                
+            if new_w_pct < 0 or new_w_pct > 100:
+                messagebox.showerror("Chyba", "Váha musí být mezi 0 a 100 %.", parent=dialog)
+                return
+                
+            new_w = new_w_pct / 100.0
+            
+            # --- MATEMATICKÁ VALIDACE REALIZOVATELNOSTI PORTFOLIA ---
+            # 1. Aktualizujeme případné změněné limity z hlavního okna
+            if hasattr(self, '_validate_and_get_limits'):
+                self._validate_and_get_limits()
+            min_w = getattr(self, 'custom_min_w', MIN_W)
+            max_w = getattr(self, 'custom_max_w', MAX_W)
+            
+            fixed_sum = 0.0
+            active_count = 0
+            
+            for t, var in self.tuner_vars.items():
+                if t not in self.ordered_tickers: continue
+                t_idx = self.ordered_tickers.index(t)
+                
+                if t == ticker:
+                    fixed_sum += new_w # Toto je nově zadaná váha z dialogu
+                elif not var.get(): 
+                    # Akcie je již zafixovaná, přičteme její současnou váhu
+                    fixed_sum += self.sim_weights[self.current_sim_idx][t_idx]
+                else:
+                    # Akcie je aktivní (bude generována Monte Carlem)
+                    active_count += 1
+                    
+            rem_w = 1.0 - fixed_sum # Zbývající kapitál k rozdělení
+            eps = 0.001 # Tolerance na plovoucí desetinnou čárku
+            
+            # Pravidlo 1: Kapitál nesmí přetéct do mínusu
+            if rem_w < -eps:
+                messagebox.showerror("Nelze aplikovat", 
+                    f"Součet všech fixovaných vah by překročil 100 % (byl by {fixed_sum*100:.1f} %).", parent=dialog)
+                return
+                
+            # Pravidlo 2: Pokud nezbyla žádná aktivní akcie, součet MUSÍ být přesně 100 %
+            if active_count == 0:
+                if abs(rem_w) > eps:
+                    messagebox.showerror("Nelze aplikovat", 
+                        f"Všechny akcie by byly zafixované, ale jejich součet není 100 % (je {fixed_sum*100:.1f} %).", parent=dialog)
+                    return
+            # Pravidlo 3: Zbývající kapitál se musí vlézt do aktuálních (Min - Max) mantinelů
+            else:
+                if rem_w < active_count * min_w - eps:
+                    messagebox.showerror("Nelze aplikovat", 
+                        f"Zbývající kapitál ({rem_w*100:.1f} %) nelze rozdělit mezi {active_count} aktivních akcií.\n\n"
+                        f"Každá aktivní akcie musí dostat alespoň nastavené minimum ({min_w*100:g} %), "
+                        f"takže potřebujete nechat volných nejméně {active_count * min_w * 100:.1f} %.", parent=dialog)
+                    return
+                if rem_w > active_count * max_w + eps:
+                    messagebox.showerror("Nelze aplikovat", 
+                        f"Zbývající kapitál ({rem_w*100:.1f} %) nelze rozdělit mezi {active_count} aktivních akcií.\n\n"
+                        f"I kdyby každá aktivní akcie dostala maximální povolenou alokaci ({max_w*100:g} %), "
+                        f"pojaly by dohromady jen {active_count * max_w * 100:.1f} % a zbytek peněz by ležel ladem.", parent=dialog)
+                    return
+                    
+            # --- APLIKACE ZMĚN ---
+            # 1. Tichá úprava paměti šampiona, aby si ji inicializátor uměl v dalším kroku načíst
+            self.sim_weights[self.current_sim_idx][idx] = new_w
+            
+            # 2. Vizuální odškrtnutí checkboxu u této akcie (čímž se pro tuner stane fixní)
+            self.tuner_vars[ticker].set(False)
+            
+            dialog.destroy()
+            
+            # Protože jsme zasáhli do vah, dosavadní šampion pro tlačítko "Vylepšit" přestává platit
+            if hasattr(self, 'btn_auto_tune') and self.btn_auto_tune.winfo_exists():
+                self.btn_auto_tune.config(state=tk.DISABLED)
+                
+            # Automatické znovuspuštění simulace s novým fixním nastavením
+            self.run_tuner_with_loading(lambda: self.initialize_tuner_data(force_download=False), 
+                                        f"Zafixováno {ticker} ({new_w_pct:.1f} %). Simuluji...")
+
+        # UI Tlačítka
+        btn_frame = tk.Frame(dialog, bg="#FFF8E1")
+        btn_frame.pack(pady=15)
+        
+        tk.Button(btn_frame, text="Uložit a fixovat", command=apply_weight, 
+                  bg="#2E7D32", fg="white", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Zrušit", command=dialog.destroy, font=("Arial", 12)).pack(side=tk.LEFT, padx=10)
+        
+        # Pohodlné ovládání klávesnicí
+        dialog.bind('<Return>', apply_weight)
+        dialog.bind('<Escape>', lambda e: dialog.destroy())
 
     # --------------------------------------------------------------------------
     # TAB 6: ODMĚNA PRO AUTORA (DONATION)
