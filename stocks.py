@@ -1198,8 +1198,10 @@ class CzechInvestorApp:
                             csv_aggregated[key]['qty'] += qty
                             csv_aggregated[key]['total_value'] += qty * price
 
-            # --- KROK 2: Agregace existujících nákupů ---
+            # --- KROK 2: Agregace existujících nákupů (Ledger + Staging + Prodeje) ---
             existing_aggregated = {}
+            
+            # 1. Započítáme všechny aktuálně držené nákupy z Ledgeru
             for t, lots in self.ledger.items():
                 for lot in lots:
                     d = lot.get("date")
@@ -1207,11 +1209,22 @@ class CzechInvestorApp:
                     key = (t, d)
                     existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
                     
+            # 2. Započítáme to, co zrovna čeká v tabulce dole před uložením
             for item in self.staging_tree.get_children():
                 vals = self.staging_tree.item(item)['values']
                 t = str(vals[0])
                 d = str(vals[1])
                 q = safe_float(str(vals[2]).replace(',', '.'))
+                key = (t, d)
+                existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
+
+            # 3. Započítáme i historické prodeje
+            # Tyto akcie sice už fyzicky nedržíme (zmizely z Ledgeru kvůli FIFO),
+            # ale v minulosti (a tedy i v CSV výpisu) prokazatelně nakoupeny byly.
+            for sale in self.sales_history:
+                t = sale.get("ticker")
+                d = sale.get("buy_date")
+                q = safe_float(sale.get("qty", 0))
                 key = (t, d)
                 existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
 
@@ -1309,10 +1322,9 @@ class CzechInvestorApp:
                         ibkr_positions[sym] = ibkr_positions.get(sym, 0.0) + qty
 
                 # B) Výpočet teoretického stavu aplikace k datu reportu
-                # Zahrneme uložený Ledger + Staging tabulku - Uložené prodeje
                 app_positions = {}
                 
-                # Započtení nákupů v Ledgeru (pouze do data vygenerování reportu)
+                # 1. Započtení aktuálně držených (zbytkových) nákupů v Ledgeru do data reportu
                 for t, lots in self.ledger.items():
                     for lot in lots:
                         try:
@@ -1321,7 +1333,7 @@ class CzechInvestorApp:
                                 app_positions[t] = app_positions.get(t, 0.0) + safe_float(lot.get("qty", 0))
                         except: pass
                 
-                # Započtení nákupů právě přidaných do fronty
+                # 2. Započtení nákupů právě přidaných do fronty (Staging) do data reportu
                 for item in self.staging_tree.get_children():
                     vals = self.staging_tree.item(item)['values']
                     t = str(vals[0])
@@ -1331,13 +1343,18 @@ class CzechInvestorApp:
                             app_positions[t] = app_positions.get(t, 0.0) + safe_float(str(vals[2]).replace(',', '.'))
                     except: pass
 
-                # Odečtení historických prodejů
+                # 3. Započtení akcií, které jsme K DATU REPORTU vlastnili, ale prodali je AŽ POTÉ.
+                # (Protože metoda FIFO tyto akcie z Ledgeru fyzicky odečítá, musíme je
+                # pro zpětnou kontrolu přičíst zpět, abychom zrekonstruovali tehdejší stav.)
                 for sale in self.sales_history:
                     try:
-                        sale_d = datetime.strptime(sale["sell_date"], "%Y-%m-%d").date()
-                        if sale_d <= report_date:
+                        buy_d = datetime.strptime(sale["buy_date"], "%Y-%m-%d").date()
+                        sell_d = datetime.strptime(sale["sell_date"], "%Y-%m-%d").date()
+                        
+                        # Podmínka: Akcie už byla nakoupena, ale ještě nebyla prodána
+                        if buy_d <= report_date and sell_d > report_date:
                             t = sale["ticker"]
-                            app_positions[t] = app_positions.get(t, 0.0) - safe_float(sale.get("qty", 0))
+                            app_positions[t] = app_positions.get(t, 0.0) + safe_float(sale.get("qty", 0))
                     except: pass
 
                 # C) Porovnání a detekce chyb
