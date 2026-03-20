@@ -1176,64 +1176,77 @@ class CzechInvestorApp:
                     "otevřených pozic bude přeskočena, protože aplikace neví, "
                     "k jakému dni má stav Ledgeru porovnat.")
 
-            # --- KROK 1: Agregace nákupů z CSV ---
-            csv_aggregated = {}
+            # --- KROK 1: Agregace nákupů a prodejů z CSV ---
+            csv_aggregated_buys = {}
+            csv_aggregated_sales = {}
             for row in rows:
                 if len(row) > idx_price and row[0] == 'Trades' and row[1] == 'Data':
                     if row[idx_desc] == 'Order' and row[idx_asset] == 'Stocks':
-                        qty = safe_float(row[idx_qty])
-                        if qty > 0: 
-                            sym = map_sym(row[idx_sym])
-                            date_str = row[idx_date].split(',')[0].strip()
-                            try:
-                                parsed_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d")
-                            except ValueError:
-                                parsed_date = date_str 
+                        qty_raw = safe_float(row[idx_qty])
+                        price = safe_float(row[idx_price])
+                        sym = map_sym(row[idx_sym])
+                        date_str = row[idx_date].split(',')[0].strip()
+                        try:
+                            parsed_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d")
+                        except ValueError:
+                            parsed_date = date_str 
+                        
+                        key = (sym, parsed_date)
+                        
+                        # Kladné množství = Nákup
+                        if qty_raw > 0: 
+                            if key not in csv_aggregated_buys:
+                                csv_aggregated_buys[key] = {'qty': 0.0, 'total_value': 0.0}
+                            csv_aggregated_buys[key]['qty'] += qty_raw
+                            csv_aggregated_buys[key]['total_value'] += qty_raw * price
                             
-                            price = safe_float(row[idx_price])
-                            key = (sym, parsed_date)
-                            if key not in csv_aggregated:
-                                csv_aggregated[key] = {'qty': 0.0, 'total_value': 0.0}
-                            
-                            csv_aggregated[key]['qty'] += qty
-                            csv_aggregated[key]['total_value'] += qty * price
+                        # Záporné množství = Prodej
+                        elif qty_raw < 0:
+                            abs_qty = abs(qty_raw)
+                            if key not in csv_aggregated_sales:
+                                csv_aggregated_sales[key] = {'qty': 0.0, 'total_value': 0.0}
+                            csv_aggregated_sales[key]['qty'] += abs_qty
+                            csv_aggregated_sales[key]['total_value'] += abs_qty * price
 
-            # --- KROK 2: Agregace existujících nákupů (Ledger + Staging + Prodeje) ---
-            existing_aggregated = {}
-            
-            # 1. Započítáme všechny aktuálně držené nákupy z Ledgeru
+            # --- KROK 2A: Agregace existujících nákupů (Ledger + Staging + Prodeje) ---
+            existing_aggregated_buys = {}
             for t, lots in self.ledger.items():
                 for lot in lots:
                     d = lot.get("date")
                     q = safe_float(lot.get("qty", 0))
                     key = (t, d)
-                    existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
+                    existing_aggregated_buys[key] = existing_aggregated_buys.get(key, 0.0) + q
                     
-            # 2. Započítáme to, co zrovna čeká v tabulce dole před uložením
             for item in self.staging_tree.get_children():
                 vals = self.staging_tree.item(item)['values']
                 t = str(vals[0])
                 d = str(vals[1])
                 q = safe_float(str(vals[2]).replace(',', '.'))
                 key = (t, d)
-                existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
+                existing_aggregated_buys[key] = existing_aggregated_buys.get(key, 0.0) + q
 
-            # 3. Započítáme i historické prodeje
-            # Tyto akcie sice už fyzicky nedržíme (zmizely z Ledgeru kvůli FIFO),
-            # ale v minulosti (a tedy i v CSV výpisu) prokazatelně nakoupeny byly.
             for sale in self.sales_history:
                 t = sale.get("ticker")
                 d = sale.get("buy_date")
                 q = safe_float(sale.get("qty", 0))
                 key = (t, d)
-                existing_aggregated[key] = existing_aggregated.get(key, 0.0) + q
+                existing_aggregated_buys[key] = existing_aggregated_buys.get(key, 0.0) + q
 
-            # --- KROK 3: Vložení chybějícího množství do Staging fronty ---
-            added_count = 0
-            for (t, d), data in csv_aggregated.items():
+            # --- KROK 2B: Agregace existujících prodejů (Sales History) ---
+            existing_aggregated_sales = {}
+            for sale in self.sales_history:
+                t = sale.get("ticker")
+                d = sale.get("sell_date")
+                q = safe_float(sale.get("qty", 0))
+                key = (t, d)
+                existing_aggregated_sales[key] = existing_aggregated_sales.get(key, 0.0) + q
+
+            # --- KROK 3A: Vložení chybějících nákupů do Staging fronty ---
+            added_buys_count = 0
+            for (t, d), data in csv_aggregated_buys.items():
                 csv_qty = data['qty']
                 csv_val = data['total_value']
-                exist_qty = existing_aggregated.get((t, d), 0.0)
+                exist_qty = existing_aggregated_buys.get((t, d), 0.0)
                 missing_qty = csv_qty - exist_qty
                 
                 if missing_qty > 0.0001:
@@ -1241,14 +1254,80 @@ class CzechInvestorApp:
                     q_str = str(round(missing_qty, 4)).replace('.', ',')
                     p_str = str(round(avg_price, 4)).replace('.', ',')
                     self.staging_tree.insert("", "end", values=(t, d, q_str, p_str, "❌"))
-                    added_count += 1
+                    added_buys_count += 1
 
-            # =================================================================
-            # KROK 3B: ZPRACOVÁNÍ SKUTEČNÝCH DIVIDEND A DANÍ Z CSV
-            # =================================================================
-            parsed_dividends = {}
+            # --- KROK 3B: Automatické zpracování chybějících prodejů (metodou FIFO) ---
+            missing_sales_to_execute =[]
+            for (t, d), data in csv_aggregated_sales.items():
+                csv_qty = data['qty']
+                csv_val = data['total_value']
+                exist_qty = existing_aggregated_sales.get((t, d), 0.0)
+                missing_qty = csv_qty - exist_qty
+
+                if missing_qty > 0.0001:
+                    avg_price = csv_val / csv_qty if csv_qty > 0 else 0.0
+                    missing_sales_to_execute.append({
+                        'ticker': t,
+                        'sell_date': d,
+                        'qty': missing_qty,
+                        'sell_price': avg_price
+                    })
+
+            added_sales_count = 0
+            failed_sales =[]
             
-            # Projdeme celé CSV a najdeme sekce "Dividends" a "Withholding Tax"
+            if missing_sales_to_execute:
+                # Seřadíme chybějící prodeje chronologicky, aby FIFO fungovalo správně
+                missing_sales_to_execute.sort(key=lambda x: x['sell_date'])
+                
+                for sale in missing_sales_to_execute:
+                    t = sale['ticker']
+                    rem_qty = sale['qty']
+                    s_date = sale['sell_date']
+                    s_price = sale['sell_price']
+
+                    # Kontrola, zda máme v Ledgeru dostatek akcií k prodeji
+                    current_held_qty = sum(safe_float(l['qty']) for l in self.ledger.get(t,[]))
+                    if current_held_qty < rem_qty - 0.0001:
+                        failed_sales.append(f"{t} ({rem_qty:g} ks)".replace('.', ','))
+                        continue
+
+                    # Seřazení Ledgeru před prodejem (pojistka pro přesné FIFO)
+                    if t in self.ledger:
+                        self.ledger[t].sort(key=lambda x: x.get("date", "1970-01-01"))
+
+                    # Exekuce prodeje a přesun do sales_history
+                    while rem_qty > 0.0001 and self.ledger.get(t):
+                        lot = self.ledger[t][0]
+                        lot_qty = safe_float(lot['qty'])
+                        sold = min(lot_qty, rem_qty)
+
+                        rem_qty -= sold
+                        lot['qty'] = lot_qty - sold
+
+                        self.sales_history.append({
+                            "ticker": t,
+                            "currency": self.get_currency_for_ticker(t),
+                            "buy_date": lot['date'],
+                            "sell_date": s_date,
+                            "qty": sold,
+                            "buy_price": safe_float(lot.get('price_at_buy', 0)),
+                            "sell_price": s_price
+                        })
+
+                        # Pokud jsme lot celý vyprodali, odstraníme ho z Ledgeru
+                        if lot['qty'] < 0.0001:
+                            self.ledger[t].pop(0)
+
+                    added_sales_count += 1
+                
+                # Pokud prošel aspoň jeden prodej, ihned uložíme změny a updatneme UI
+                if added_sales_count > 0:
+                    self.save_data()
+                    self.update_lots_view()
+
+            # --- KROK 3C: ZPRACOVÁNÍ SKUTEČNÝCH DIVIDEND A DANÍ Z CSV ---
+            parsed_dividends = {}
             for row in rows:
                 if len(row) > 5 and row[0] == 'Dividends' and row[1] == 'Data' and not row[2].startswith('Total'):
                     currency = row[2]
@@ -1304,7 +1383,7 @@ class CzechInvestorApp:
                 self.save_data()
 
             # =================================================================
-            # KROK 4: HLOUBKOVÝ AUDIT (KONTROLA OTEVŘENÝCH POZIC)
+            # KROK 4: HLOUBKOVÝ AUDIT (Spustí se pouze, pokud známe datum reportu)
             # =================================================================
             audit_errors = []
             audit_performed = False
@@ -1321,10 +1400,9 @@ class CzechInvestorApp:
                         qty = safe_float(row[6])
                         ibkr_positions[sym] = ibkr_positions.get(sym, 0.0) + qty
 
-                # B) Výpočet teoretického stavu aplikace k datu reportu
                 app_positions = {}
                 
-                # 1. Započtení aktuálně držených (zbytkových) nákupů v Ledgeru do data reportu
+                # 1. Započtení aktuálně držených (zbytkových) nákupů v Ledgeru
                 for t, lots in self.ledger.items():
                     for lot in lots:
                         try:
@@ -1333,7 +1411,7 @@ class CzechInvestorApp:
                                 app_positions[t] = app_positions.get(t, 0.0) + safe_float(lot.get("qty", 0))
                         except: pass
                 
-                # 2. Započtení nákupů právě přidaných do fronty (Staging) do data reportu
+                # 2. Započtení nákupů právě přidaných do fronty (Staging)
                 for item in self.staging_tree.get_children():
                     vals = self.staging_tree.item(item)['values']
                     t = str(vals[0])
@@ -1381,37 +1459,38 @@ class CzechInvestorApp:
 
             # --- FINÁLNÍ ZOBRAZENÍ VÝSLEDKŮ UŽIVATELI ---
             import_msg = ""
-            if added_count > 0 or added_divs > 0:
-                import_msg = f"Nalezeno a naimportováno:\n"
-                if added_count > 0:
-                    import_msg += f"• {added_count} nových nákupů akcií (čekají dole na potvrzení)\n"
+            if added_buys_count > 0 or added_sales_count > 0 or added_divs > 0 or failed_sales:
+                import_msg = "Nalezeno a zpracováno:\n"
+                if added_buys_count > 0:
+                    import_msg += f"• {added_buys_count} nových nákupů (čekají dole na potvrzení)\n"
+                if added_sales_count > 0:
+                    import_msg += f"• {added_sales_count} nových prodejů (automaticky zapsáno pomocí FIFO)\n"
                 if added_divs > 0:
-                    import_msg += f"• {added_divs} záznamů o skutečných dividendách (rovnou uloženo)\n"
+                    import_msg += f"• {added_divs} záznamů o dividendách a daních (automaticky uloženo)\n"
+                
+                # Zobrazení případného varování u prodejů
+                if failed_sales:
+                    import_msg += "\n❌ Následující prodeje nešlo zpracovat (nemáte evidován dostatek akcií):\n"
+                    for fs in failed_sales:
+                        import_msg += f"   - {fs}\n"
+                    import_msg += "-> Zapište nejprve nákupy z čekací fronty a zopakujte import.\n"
             else:
-                import_msg = "Ve výpisu nebyly nalezeny žádné nové nákupy ani dividendy k importu."
+                import_msg = "Ve výpisu nebyly nalezeny žádné nové nákupy, prodeje ani dividendy k importu."
 
             if not audit_performed:
-                # Datum nenalezeno, zobrazíme jen výsledek importu
                 messagebox.showinfo("Výsledek importu", import_msg + "\n\n(Audit pozic nebyl proveden kvůli chybějícímu datu v CSV.)")
             elif audit_errors:
-                # Našly se chyby - zobrazíme Varování (Warning)
                 audit_msg = ("\n\n⚠️ UPOZORNĚNÍ - AUDIT POZIC NAŠEL NESROVNALOSTI:\n"
                              f"Váš stav k {report_date.strftime('%d.%m.%Y')} neodpovídá brokerovi:\n\n" + 
-                             "\n".join(audit_errors) + 
-                             "\n\nMožné příčiny:\n"
-                             "1. Máte v JSONu nákup navíc, který v CSV chybí.\n"
-                             "2. Udělali jste v minulosti prodej, který jste v appce nezaznamenali.\n"
-                             "3. Ručně zadané množství v Ledgeru obsahuje překlep.")
+                             "\n".join(audit_errors))
                 messagebox.showwarning("Výsledek importu a auditu", import_msg + audit_msg)
             else:
-                # Vše sedí na kus přesně - zobrazíme potvrzení (Info)
-                success_msg = f"\n\n✅ AUDIT POŘÁDKU: Vaše evidence k {report_date.strftime('%d.%m.%Y')} reportu přesně odpovídá stavu u brokera."
+                success_msg = f"\n\n✅ AUDIT POŘÁDKU: Vaše evidence k {report_date.strftime('%d.%m.%Y')} přesně odpovídá brokerovi."
                 messagebox.showinfo("Výsledek importu", import_msg + success_msg)
 
         except Exception as e:
-            # Záchranná síť pro nečekané chyby (např. zamčený soubor, chyba oprávnění)
             messagebox.showerror("Chyba při čtení", f"Při zpracování CSV souboru došlo k nečekané chybě.\n\nDetail: {e}")
-
+            
     def delete_staging_row(self, event):
         item = self.staging_tree.selection()
         if item: self.staging_tree.delete(item)
