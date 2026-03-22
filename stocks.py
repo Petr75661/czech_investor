@@ -836,7 +836,7 @@ class CzechInvestorApp:
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         rows_needed = len(TARGETS)
-        tree_height = min(rows_needed, 12)
+        tree_height = min(rows_needed, 17)
 
         self.buy_tree = ttk.Treeview(tree_container, columns=("Ticker", "Cíl %", "Cena trh [USD/GBP]", "FX", "CZK (Návrh)", "Hodnota [USD/GBP]", "Ks (Návrh)"), 
                                      show="headings", height=tree_height, yscrollcommand=tree_scroll.set)
@@ -880,18 +880,27 @@ class CzechInvestorApp:
         final_frame = tk.LabelFrame(main_frame, text="3. Seznam realizovaných obchodů (Připraveno k zápisu)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
         final_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        self.staging_tree = ttk.Treeview(final_frame, columns=("Ticker", "Datum", "Množství", "Cena", "Akce"), show="headings", height=6)
+        # Kontejner pro tabulku a scrollbar
+        staging_container = tk.Frame(final_frame, bg="#f0f2f5")
+        staging_container.pack(fill=tk.BOTH, expand=True)
+
+        staging_scroll = ttk.Scrollbar(staging_container, orient="vertical")
+        staging_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.staging_tree = ttk.Treeview(staging_container, columns=("Ticker", "Datum", "Množství", "Cena", "Akce"), 
+                                         show="headings", height=6, yscrollcommand=staging_scroll.set)
+        
+        staging_scroll.config(command=self.staging_tree.yview)
+
         for c in ("Ticker", "Datum", "Množství", "Cena"):
             self.staging_tree.heading(c, text=c)
             self.staging_tree.column(c, anchor="center")
         self.staging_tree.heading("Akce", text="Smazat")
         self.staging_tree.column("Akce", width=80, anchor="center")
-        self.staging_tree.pack(fill=tk.BOTH, expand=True)
+        self.staging_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.staging_tree.bind("<Double-1>", self.delete_staging_row)
-
-        self.staging_tree.bind("<Double-1>", self.delete_staging_row)
-
+        
         btn_bar = tk.Frame(final_frame, bg="#f0f2f5")
         btn_bar.pack(pady=10)
         tk.Button(btn_bar, text="💾 ULOŽIT VŠE DO PORTFOLIA", command=self.commit_staging_to_ledger, 
