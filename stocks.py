@@ -813,12 +813,22 @@ class CzechInvestorApp:
         main_frame = tk.Frame(self.notebook, bg="#f0f2f5")
         self.notebook.add(main_frame, text="Nákup")
         
-        # 1. Teoretický návrh (Kalkulátor)
-        calc_frame = tk.LabelFrame(main_frame, text="1. Teoretický návrh (Kalkulátor)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
-        calc_frame.pack(fill=tk.X, padx=10, pady=5)
+        # --- 1. VYTVOŘENÍ A ROZMÍSTĚNÍ HLAVNÍCH RÁMEČKŮ ---
+        # Zabíráme místo odspodu nahoru. Tím garantujeme, 
+        # že spodní tlačítko nikdy nezmizí při zmenšení okna a smrskne se jen horní tabulka.
         
+        final_frame = tk.LabelFrame(main_frame, text="3. Seznam realizovaných obchodů (Připraveno k zápisu)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
+        final_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=False, padx=10, pady=5)
+        
+        edit_frame = tk.LabelFrame(main_frame, text="2. Skutečná realizace (Zadejte dle výpisu brokera)", bg="#E3F2FD", padx=10, pady=10, font=("Arial", 12, "bold"))
+        edit_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+
+        calc_frame = tk.LabelFrame(main_frame, text="1. Teoretický návrh (Kalkulátor)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
+        calc_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # --- 2. OBSAH RÁMEČKU 1 (Kalkulátor) ---
         top_bar = tk.Frame(calc_frame, bg="#f0f2f5")
-        top_bar.pack(pady=5, anchor="w")
+        top_bar.pack(side=tk.TOP, pady=5, anchor="w")
         
         tk.Label(top_bar, text="Investice (Kč):", font=("Arial", 12), bg="#f0f2f5").pack(side=tk.LEFT, padx=5)
         self.cash_entry = tk.Entry(top_bar, font=("Arial", 12), width=12)
@@ -830,7 +840,8 @@ class CzechInvestorApp:
         self.btn_calc_buys.pack(side=tk.LEFT, padx=20)
                   
         tree_container = tk.Frame(calc_frame, bg="#f0f2f5")
-        tree_container.pack(fill=tk.X, pady=5)
+        # Zde fill=tk.BOTH a expand=True zajišťuje vertikální pružnost tabulky
+        tree_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
 
         tree_scroll = ttk.Scrollbar(tree_container)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -845,14 +856,12 @@ class CzechInvestorApp:
             self.buy_tree.heading(c, text=c)
             self.buy_tree.column(c, width=w, anchor="center")
         
-        self.buy_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # fill=tk.BOTH zajistí, aby se strom natahoval i do výšky
+        self.buy_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_scroll.config(command=self.buy_tree.yview)
         self.buy_tree.bind("<<TreeviewSelect>>", self.fill_entry_from_proposal)
 
-        # 2. Skutečná realizace (Formulář)
-        edit_frame = tk.LabelFrame(main_frame, text="2. Skutečná realizace (Zadejte dle výpisu brokera)", bg="#E3F2FD", padx=10, pady=10, font=("Arial", 12, "bold"))
-        edit_frame.pack(fill=tk.X, padx=10, pady=5)
-
+        # --- 3. OBSAH RÁMEČKU 2 (Skutečná realizace) ---
         tk.Label(edit_frame, text="Ticker:", bg="#E3F2FD", font=("Arial", 12)).grid(row=0, column=0, padx=5)
         self.real_ticker = tk.Entry(edit_frame, width=10, font=("Arial", 12))
         self.real_ticker.grid(row=1, column=0, padx=5)
@@ -866,23 +875,25 @@ class CzechInvestorApp:
         self.real_qty = tk.Entry(edit_frame, width=12, font=("Arial", 12))
         self.real_qty.grid(row=1, column=2, padx=5)
 
-        tk.Label(edit_frame, text="Nákupní cena [USD/GBP]:", bg="#E3F2FD", font=("Arial", 12)).grid(row=0, column=3, padx=5)
+        tk.Label(edit_frame, text="Nákupní cena[USD/GBP]:", bg="#E3F2FD", font=("Arial", 12)).grid(row=0, column=3, padx=5)
         self.real_price = tk.Entry(edit_frame, width=12, font=("Arial", 12))
         self.real_price.grid(row=1, column=3, padx=5)
 
         tk.Button(edit_frame, text="↓ Přidat do seznamu k uložení", command=self.add_manual_entry, bg="#1565C0", fg="white", font=("Arial", 12, "bold")).grid(row=1, column=4, padx=20)
         tk.Label(edit_frame, text="(Klikni nahoře na řádek pro rychlé vyplnění)", bg="#E3F2FD", fg="grey", font=("Arial", 11)).grid(row=0, column=4)
 
-        # Tlačítko pro automatický import z CSV od IBKR
         tk.Button(edit_frame, text="📥 Import nákupů\nIBKR (.csv)", command=self.import_ibkr_csv, bg="#FF9800", fg="black", font=("Arial", 12, "bold")).grid(row=0, column=5, rowspan=2, padx=(10, 5), sticky="nsew")
 
-        # 3. Fronta pro finální uložení (Staging)
-        final_frame = tk.LabelFrame(main_frame, text="3. Seznam realizovaných obchodů (Připraveno k zápisu)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
-        final_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # --- 4. OBSAH RÁMEČKU 3 (Staging / Připraveno k zápisu) ---
+        # Uložit tlačítko balíme s předstihem dospod (side=tk.BOTTOM), aby bylo 100% v bezpečí
+        btn_bar = tk.Frame(final_frame, bg="#f0f2f5")
+        btn_bar.pack(side=tk.BOTTOM, pady=10)
+        tk.Button(btn_bar, text="💾 ULOŽIT VŠE DO PORTFOLIA", command=self.commit_staging_to_ledger, 
+                  font=("Arial", 14, "bold"), bg="#C62828", fg="white", padx=20).pack()
 
-        # Kontejner pro tabulku a scrollbar
+        # Kontejner pro tabulku a scrollbar balíme nahoru
         staging_container = tk.Frame(final_frame, bg="#f0f2f5")
-        staging_container.pack(fill=tk.BOTH, expand=True)
+        staging_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         staging_scroll = ttk.Scrollbar(staging_container, orient="vertical")
         staging_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -897,14 +908,11 @@ class CzechInvestorApp:
             self.staging_tree.column(c, anchor="center")
         self.staging_tree.heading("Akce", text="Smazat")
         self.staging_tree.column("Akce", width=80, anchor="center")
+        
+        # Opět fill=tk.BOTH, aby byla pružná a reagovala na výšku
         self.staging_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.staging_tree.bind("<Double-1>", self.delete_staging_row)
-        
-        btn_bar = tk.Frame(final_frame, bg="#f0f2f5")
-        btn_bar.pack(pady=10)
-        tk.Button(btn_bar, text="💾 ULOŽIT VŠE DO PORTFOLIA", command=self.commit_staging_to_ledger, 
-                  font=("Arial", 14, "bold"), bg="#C62828", fg="white", padx=20).pack()
                   
         # Přidání vizuálního loading elementu pro záložku Nákup (zůstává skrytý)
         self.planner_loading_state = self._create_loading_card(main_frame)
