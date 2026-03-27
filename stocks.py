@@ -814,17 +814,24 @@ class CzechInvestorApp:
         self.notebook.add(main_frame, text="Nákup")
         
         # --- 1. VYTVOŘENÍ A ROZMÍSTĚNÍ HLAVNÍCH RÁMEČKŮ ---
-        # Zabíráme místo odspodu nahoru. Tím garantujeme, 
-        # že spodní tlačítko nikdy nezmizí při zmenšení okna a smrskne se jen horní tabulka.
+        # Trik pro responzivitu: Zabíráme místo odspodu nahoru. Tím garantujeme, 
+        # že spodní tlačítka nikdy nezmizí při zmenšení okna a smrskne se jen tabulka.
         
+        # Spodní rámeček se seznamem k uložení.
+        # ZMĚNA: Nastavujeme expand=True. Při zvětšení okna si tak vezme 
+        # veškeré přebytečné místo právě tato tabulka. Skvělé pro CSV import!
         final_frame = tk.LabelFrame(main_frame, text="3. Seznam realizovaných obchodů (Připraveno k zápisu)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
-        final_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=False, padx=10, pady=5)
+        final_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=10, pady=5)
         
+        # Prostřední formulář. Pevná výška (expand=False), zůstává zakotven dole.
         edit_frame = tk.LabelFrame(main_frame, text="2. Skutečná realizace (Zadejte dle výpisu brokera)", bg="#E3F2FD", padx=10, pady=10, font=("Arial", 12, "bold"))
         edit_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
 
+        # Horní rámeček (Kalkulátor).
+        # ZMĚNA: Nastavujeme expand=False. Rámeček tak vyroste přesně na výšku
+        # stromu (např. 16 řádků) a zastaví se. Zabrání se ošklivému prázdnému místu.
         calc_frame = tk.LabelFrame(main_frame, text="1. Teoretický návrh (Kalkulátor)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
-        calc_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=5)
+        calc_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=False, padx=10, pady=5)
 
         # --- 2. OBSAH RÁMEČKU 1 (Kalkulátor) ---
         top_bar = tk.Frame(calc_frame, bg="#f0f2f5")
@@ -840,14 +847,14 @@ class CzechInvestorApp:
         self.btn_calc_buys.pack(side=tk.LEFT, padx=20)
                   
         tree_container = tk.Frame(calc_frame, bg="#f0f2f5")
-        # Zde fill=tk.BOTH a expand=True zajišťuje vertikální pružnost tabulky
         tree_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
 
         tree_scroll = ttk.Scrollbar(tree_container)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         rows_needed = len(TARGETS)
-        tree_height = min(rows_needed, 17)
+        # Necháme tabulce výšku přesně podle počtu cílů, ale dáme rezervu max na 20
+        tree_height = min(rows_needed, 20)
 
         self.buy_tree = ttk.Treeview(tree_container, columns=("Ticker", "Cíl %", "Cena trh [USD/GBP]", "FX", "CZK (Návrh)", "Hodnota [USD/GBP]", "Ks (Návrh)"), 
                                      show="headings", height=tree_height, yscrollcommand=tree_scroll.set)
@@ -856,7 +863,7 @@ class CzechInvestorApp:
             self.buy_tree.heading(c, text=c)
             self.buy_tree.column(c, width=w, anchor="center")
         
-        # fill=tk.BOTH zajistí, aby se strom natahoval i do výšky
+        # ZMĚNA: Přidán parametr fill=tk.BOTH, aby se tabulka správně natáhla
         self.buy_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_scroll.config(command=self.buy_tree.yview)
         self.buy_tree.bind("<<TreeviewSelect>>", self.fill_entry_from_proposal)
@@ -875,7 +882,7 @@ class CzechInvestorApp:
         self.real_qty = tk.Entry(edit_frame, width=12, font=("Arial", 12))
         self.real_qty.grid(row=1, column=2, padx=5)
 
-        tk.Label(edit_frame, text="Nákupní cena[USD/GBP]:", bg="#E3F2FD", font=("Arial", 12)).grid(row=0, column=3, padx=5)
+        tk.Label(edit_frame, text="Nákupní cena [USD/GBP]:", bg="#E3F2FD", font=("Arial", 12)).grid(row=0, column=3, padx=5)
         self.real_price = tk.Entry(edit_frame, width=12, font=("Arial", 12))
         self.real_price.grid(row=1, column=3, padx=5)
 
@@ -885,21 +892,21 @@ class CzechInvestorApp:
         tk.Button(edit_frame, text="📥 Import nákupů\nIBKR (.csv)", command=self.import_ibkr_csv, bg="#FF9800", fg="black", font=("Arial", 12, "bold")).grid(row=0, column=5, rowspan=2, padx=(10, 5), sticky="nsew")
 
         # --- 4. OBSAH RÁMEČKU 3 (Staging / Připraveno k zápisu) ---
-        # Uložit tlačítko balíme s předstihem dospod (side=tk.BOTTOM), aby bylo 100% v bezpečí
         btn_bar = tk.Frame(final_frame, bg="#f0f2f5")
         btn_bar.pack(side=tk.BOTTOM, pady=10)
         tk.Button(btn_bar, text="💾 ULOŽIT VŠE DO PORTFOLIA", command=self.commit_staging_to_ledger, 
                   font=("Arial", 14, "bold"), bg="#C62828", fg="white", padx=20).pack()
 
-        # Kontejner pro tabulku a scrollbar balíme nahoru
         staging_container = tk.Frame(final_frame, bg="#f0f2f5")
         staging_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         staging_scroll = ttk.Scrollbar(staging_container, orient="vertical")
         staging_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # ZMĚNA: Výšku (height) jsem zvednul na 5, aby tabulka vypadala lépe už při spuštění,
+        # ale díky expand=True výše na 'final_frame' si po maximalizaci okna vezme spoustu místa navíc.
         self.staging_tree = ttk.Treeview(staging_container, columns=("Ticker", "Datum", "Množství", "Cena", "Akce"), 
-                                         show="headings", height=2, yscrollcommand=staging_scroll.set)
+                                         show="headings", height=5, yscrollcommand=staging_scroll.set)
         
         staging_scroll.config(command=self.staging_tree.yview)
 
@@ -909,12 +916,10 @@ class CzechInvestorApp:
         self.staging_tree.heading("Akce", text="Smazat")
         self.staging_tree.column("Akce", width=80, anchor="center")
         
-        # Opět fill=tk.BOTH, aby byla pružná a reagovala na výšku
         self.staging_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.staging_tree.bind("<Double-1>", self.delete_staging_row)
                   
-        # Přidání vizuálního loading elementu pro záložku Nákup (zůstává skrytý)
         self.planner_loading_state = self._create_loading_card(main_frame)
 
     def start_calculate_buys(self):
