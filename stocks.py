@@ -888,7 +888,7 @@ class CzechInvestorApp:
         staging_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.staging_tree = ttk.Treeview(staging_container, columns=("Ticker", "Datum", "Množství", "Cena", "Akce"), 
-                                         show="headings", height=6, yscrollcommand=staging_scroll.set)
+                                         show="headings", height=2, yscrollcommand=staging_scroll.set)
         
         staging_scroll.config(command=self.staging_tree.yview)
 
