@@ -298,7 +298,7 @@ class CzechInvestorApp:
         self.setup_tuner_tab()    
         self.setup_donation_tab()
 
-        self.root.after(2000, lambda: self.run_dash_with_loading(self.refresh_stats, "Stahuji data, prosím, čekejte..."))
+        self.root.after(2000, self.start_incremental_refresh)
 
     def on_close(self):
         self.root.destroy()
@@ -508,8 +508,8 @@ class CzechInvestorApp:
         self.sell_price_entry.delete(0, tk.END)
         self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
 
-    def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=4, auto_adjust=True):
-        """Robustní stahovač s ochranou proti vnitřním chybám yfinance (NoneType error)."""
+    def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=4, auto_adjust=True, start=None, end=None):
+        """Robustní stahovač s ochranou proti vnitřním chybám yfinance."""
         import time
         import random
         import numpy as np
@@ -523,17 +523,21 @@ class CzechInvestorApp:
             
         for i in range(max_retries):
             try:
-                # 1. HLAVNÍ STAŽENÍ
-                data = yf.download(expected_tickers, period=period, interval=interval, 
-                                   progress=False, auto_adjust=auto_adjust, actions=False, threads=False)                
-                # Ochrana proti vnitřní chybě yfinance, kdy download vrátí None nebo prázdno
+                # 1. HLAVNÍ STAŽENÍ (s podporou konkrétních dat)
+                if start:
+                    data = yf.download(expected_tickers, start=start, end=end, interval=interval, 
+                                       progress=False, auto_adjust=auto_adjust, actions=False, threads=False)
+                else:
+                    data = yf.download(expected_tickers, period=period, interval=interval, 
+                                       progress=False, auto_adjust=auto_adjust, actions=False, threads=False)                
+                
                 if data is None or data.empty or 'Close' not in data:
                     raise ValueError("Yahoo Finance nevrátil validní data.")
                 
                 close_data = data['Close'].replace(0.0, np.nan)
                 
-                # 2. KONTROLA INTEGRITY (SPOT-CHECK)
-                if period == "5y":
+                # 2. KONTROLA INTEGRITY (vynechá se při postupném do-stahování)
+                if period == "5y" and not start:
                     if len(close_data) < 1000:
                         raise ValueError("Vrácena nekompletní historie.")
 
@@ -2972,7 +2976,7 @@ class CzechInvestorApp:
         
         # Uložení referencí na tlačítka pro možnost jejich deaktivace
         self.btn_refresh_stats = tk.Button(ctrl_panel, text="↻ AKTUALIZOVAT DATA", 
-                                          command=lambda: self.run_dash_with_loading(self.refresh_stats, "Přepočítávám historii..."), 
+                                          command=self.start_incremental_refresh, 
                                           font=("Arial", 12, "bold"), bg="#37474F", fg="white")
         self.btn_refresh_stats.pack(side=tk.LEFT)
         
@@ -3002,431 +3006,401 @@ class CzechInvestorApp:
         if hasattr(self, 'btn_export_tax') and self.btn_export_tax.winfo_exists():
             self.btn_export_tax.config(state=state)
             
-    def refresh_stats(self):
-        if os.path.exists(PORTFOLIO_FILE):
-            self.root.after(0, lambda: self.status_lbl.config(text="Přepočítávám historii...", fg="blue"))
+    def start_incremental_refresh(self):
+        if getattr(self, 'dash_loading_state', {}).get("is_loading"): return
+        
+        self.show_loading(self.dash_loading_state, "Stahuji aktuální rok...")
+        self._set_dash_controls_state(tk.DISABLED)
+        
+        # Spuštění workeru, který bude stahovat rok po roce na pozadí
+        threading.Thread(target=self._incremental_fetch_worker, daemon=True).start()
+
+    def _incremental_fetch_worker(self):
+        try:
+            if not os.path.exists(PORTFOLIO_FILE): return
             
             all_tickers_set = set(TARGETS.keys())
             all_tickers_set.update(self.ledger.keys())
             for s in self.sales_history: all_tickers_set.add(s['ticker'])
             all_tickers = list(all_tickers_set)
             
-            try:
-                fx = self.get_fx_rates()
-                # Používáme auto_adjust=False, abychom získali jak čisté ceny (Close) pro přesné
-                # historické ocenění a výpočet výnosu, tak očištěné ceny (Adj Close) pro simulaci reinvestic.
-                downloaded = self._safe_yf_download(all_tickers, period="5y", auto_adjust=False)
+            if not all_tickers: return
+
+            fx = self.get_fx_rates()
+            
+            # Přednačtení historie dividend na začátku, aby nezdržovalo vykreslování
+            self.root.after(0, lambda: self.status_lbl.config(text="Připravuji data k dividendám...", fg="blue"))
+            all_divs = {t: self._safe_get_dividends(t) for t in all_tickers}
+            
+            current_year = datetime.now().year
+            years_to_fetch =[current_year, current_year - 1, current_year - 2, current_year - 3, current_year - 4]
+            
+            accumulated_adj = pd.DataFrame()
+            accumulated_raw = pd.DataFrame()
+            
+            for i, y in enumerate(years_to_fetch):
+                self.root.after(0, lambda yr=y: self.status_lbl.config(text=f"Stahuji historii pro rok {yr}...", fg="blue"))
+                
+                start_date = f"{y}-01-01"
+                end_date = f"{y+1}-01-01" if y < current_year else None
+                
+                # ZMĚNA: Používáme přesný rok od-do
+                downloaded = self._safe_yf_download(all_tickers, start=start_date, end=end_date, auto_adjust=False)
                 
                 if downloaded.empty or 'Close' not in downloaded:
-                    self.root.after(0, lambda: messagebox.showerror("Chyba stahování", "Data pro statistiky jsou nedostupná."))
-                    self.root.after(0, lambda: self.status_lbl.config(text="Chyba stahování", fg="red"))
-                    return
-                
-                # Oddělení očištěných a hrubých cen
+                    if i == 0:
+                        self.root.after(0, lambda: messagebox.showerror("Chyba stahování", "Data pro aktuální rok jsou nedostupná."))
+                        self.root.after(0, lambda: self.status_lbl.config(text="Chyba stahování", fg="red"))
+                        return
+                    else:
+                        break # Starší rok selhal, spokojíme se s tím, co už máme a zastavíme propad do minulosti
+                        
                 if 'Adj Close' in downloaded:
-                    hist_prices_adj = downloaded['Adj Close'].replace(0.0, np.nan).ffill().bfill()
-                    hist_prices_raw = downloaded['Close'].replace(0.0, np.nan).ffill().bfill()
+                    c_adj = downloaded['Adj Close'].replace(0.0, np.nan)
+                    c_raw = downloaded['Close'].replace(0.0, np.nan)
                 else:
-                    hist_prices_adj = downloaded['Close'].replace(0.0, np.nan).ffill().bfill()
-                    hist_prices_raw = hist_prices_adj
+                    c_adj = downloaded['Close'].replace(0.0, np.nan)
+                    c_raw = c_adj
+
+                if isinstance(c_adj, pd.Series): 
+                    c_adj = c_adj.to_frame(name=all_tickers[0])
+                    c_raw = c_raw.to_frame(name=all_tickers[0])
                     
-                if isinstance(hist_prices_adj, pd.Series): 
-                    hist_prices_adj = hist_prices_adj.to_frame(name=all_tickers[0])
-                    hist_prices_raw = hist_prices_raw.to_frame(name=all_tickers[0])
-                
-                # víkendy a svátky
-                # Převedeme všechna data na objekty Datetime
-                ledger_dt = {t: [{'date': pd.Timestamp(l['date']), 'qty': l['qty'], 'price_at_buy': l['price_at_buy']} for l in lots] for t, lots in self.ledger.items()}
-                sales_dt = [{'buy_date': pd.Timestamp(s['buy_date']), 'sell_date': pd.Timestamp(s['sell_date']), 'qty': s['qty'], 'ticker': s['ticker'], 'sell_price': s['sell_price'], 'buy_price': s['buy_price'], 'currency': s.get('currency', 'USD')} for s in self.sales_history]
-
-                # Roztáhneme časovou osu Yahoo dat na VŠECHNY kalendářní dny (včetně víkendů)
-                # Chybějící ceny (sobota/neděle) se doplní z pátku pomocí 'ffill'
-                ledger_dates = [l['date'] for t, lots in ledger_dt.items() for l in lots]
-                max_d = max([hist_prices_adj.index.max(), pd.Timestamp(datetime.now().date())] + ledger_dates)
-                full_idx = pd.date_range(start=hist_prices_adj.index.min(), end=max_d)
-                
-                hist_prices_adj = hist_prices_adj.reindex(full_idx).ffill()
-                hist_prices_raw = hist_prices_raw.reindex(full_idx).ffill()
-                
-                all_buy_dates = [l['date'] for t in self.ledger for l in self.ledger.get(t,[])]
-                has_buys = len(all_buy_dates) > 0
-                
-                if has_buys:
-                    first_buy_str = min(all_buy_dates)
-                    first_buy_dt = pd.Timestamp(first_buy_str)
-                    first_buy_year = first_buy_dt.year
+                if accumulated_adj.empty:
+                    accumulated_adj = c_adj
+                    accumulated_raw = c_raw
                 else:
-                    first_buy_dt = None
-                    first_buy_year = 9999
+                    # Přilepení nového (staršího) roku zleva a seřazení od nejstaršího po dnešek
+                    accumulated_adj = pd.concat([c_adj, accumulated_adj]).sort_index()
+                    accumulated_raw = pd.concat([c_raw, accumulated_raw]).sort_index()
+                    accumulated_adj = accumulated_adj[~accumulated_adj.index.duplicated(keep='last')]
+                    accumulated_raw = accumulated_raw[~accumulated_raw.index.duplicated(keep='last')]
 
-                # 1. Zjistíme aktuální hodnotu každé pozice v CZK pro výpočet reálných vah
-                current_values_czk = {}
-                total_portfolio_now = 0.0
-                last_prices = hist_prices_raw.iloc[-1] # Tady MUSÍ být RAW ceny
-                
-                for t in all_tickers:
-                    qty_now = sum(l['qty'] for l in self.ledger.get(t,[]))
-                    if qty_now > 0 and t in hist_prices_raw.columns:
-                        p = last_prices[t] / (100.0 if t.endswith(".L") else 1.0)
-                        val = p * qty_now * fx.get(self.get_currency_for_ticker(t), 23.0)
-                        current_values_czk[t] = val
-                        total_portfolio_now += val
-                
-                # 2. Vypočítáme aktuální procentuální váhy (actual weights)
-                actual_weights = {}
-                if total_portfolio_now > 0:
-                    actual_weights = {t: val / total_portfolio_now for t, val in current_values_czk.items()}
-                else:
-                    actual_weights = {t: w for t, w in TARGETS.items()}
-                    total_portfolio_now = 100000.0
+                # Ffill a bfill aplikujeme až nakonec, aby vyhladily přechody mezi Novým a Starým rokem
+                adj_clean = accumulated_adj.ffill().bfill()
+                raw_clean = accumulated_raw.ffill().bfill()
 
-                # 3. Vygenerujeme normalizovanou Constant Mix křivku (denní rebalancing)
-                # Simulace MUSÍ používat Adj Close, aby zohlednila reinvestice dividend a splity
-                daily_pct_changes = hist_prices_adj.pct_change().fillna(0)
+                # Trik pro zrychlení UI: Animaci ozubených kol schováme hned, jak máme aktuální rok (i=0)
+                if i == 0:
+                    self.root.after(0, lambda: self.hide_loading(self.dash_loading_state))
 
-                # Srovnáme váhy do vektoru odpovídajícímu sloupcům v hist_prices
-                w_vector = np.array([actual_weights.get(col, 0.0) for col in hist_prices_adj.columns])
+                is_final = (i == len(years_to_fetch) - 1)
                 
-                # Výpočet denních výnosů portfolia (pro šedou simulační čáru)
-                portfolio_daily_returns = daily_pct_changes.dot(w_vector)
-                norm_curve = (1 + portfolio_daily_returns).cumprod()
+                # Bezpečné předání dat (kopií) do hlavního vlákna pro vykreslení
+                a_copy = adj_clean.copy()
+                r_copy = raw_clean.copy()
                 
-                # Škálování simulace (šedá čára) tak, aby končila na dnešní hodnotě majetku
-                scaling_factor = total_portfolio_now / norm_curve.iloc[-1]
-                sim_curve = norm_curve * scaling_factor
+                self.root.after(0, lambda a=a_copy, r=r_copy, f=fx, t=all_tickers, d=all_divs, fin=is_final: 
+                                self._render_stats_graphs_ui(a, r, f, t, d, fin))
+                
+        except Exception as e:
+            print(f"Error in incremental fetch: {e}")
+            self.root.after(0, lambda: self.status_lbl.config(text="Chyba výpočtu", fg="red"))
+        finally:
+            # Povolení tlačítek na úplném konci, po stažení všech 5 let (nebo chybě)
+            self.root.after(0, lambda: self._set_dash_controls_state(tk.NORMAL))
+            self.root.after(0, lambda: self.hide_loading(self.dash_loading_state))
 
-                # --- REKONSTRUKCE REÁLNÉHO VÝVOJE (Modrá čára) ---
-                qty_matrix = pd.DataFrame(0.0, index=hist_prices_raw.index, columns=all_tickers)
-                
-                # A) Přičteme aktuálně držené (otevřené) pozice
-                for t, lots in ledger_dt.items():
-                    for lot in lots:
+
+    def _render_stats_graphs_ui(self, hist_prices_adj, hist_prices_raw, fx, all_tickers, all_divs, is_final):
+        """Tato metoda se teď zavolá až 5x po sobě, postupně s delší a delší historií v parametru hist_prices."""
+        try:
+            ledger_dt = {t:[{'date': pd.Timestamp(l['date']), 'qty': l['qty'], 'price_at_buy': l['price_at_buy']} for l in lots] for t, lots in self.ledger.items()}
+            sales_dt =[{'buy_date': pd.Timestamp(s['buy_date']), 'sell_date': pd.Timestamp(s['sell_date']), 'qty': s['qty'], 'ticker': s['ticker'], 'sell_price': s['sell_price'], 'buy_price': s['buy_price'], 'currency': s.get('currency', 'USD')} for s in self.sales_history]
+
+            ledger_dates = [l['date'] for t, lots in ledger_dt.items() for l in lots]
+            max_d = max([hist_prices_adj.index.max(), pd.Timestamp(datetime.now().date())] + ledger_dates)
+            full_idx = pd.date_range(start=hist_prices_adj.index.min(), end=max_d)
+            
+            hist_prices_adj = hist_prices_adj.reindex(full_idx).ffill()
+            hist_prices_raw = hist_prices_raw.reindex(full_idx).ffill()
+            
+            all_buy_dates = [l['date'] for t in self.ledger for l in self.ledger.get(t,[])]
+            has_buys = len(all_buy_dates) > 0
+            
+            if has_buys:
+                first_buy_str = min(all_buy_dates)
+                first_buy_dt = pd.Timestamp(first_buy_str)
+                first_buy_year = first_buy_dt.year
+            else:
+                first_buy_dt = None
+                first_buy_year = 9999
+
+            current_values_czk = {}
+            total_portfolio_now = 0.0
+            last_prices = hist_prices_raw.iloc[-1]
+            
+            for t in all_tickers:
+                qty_now = sum(l['qty'] for l in self.ledger.get(t,[]))
+                if qty_now > 0 and t in hist_prices_raw.columns:
+                    p = last_prices[t] / (100.0 if t.endswith(".L") else 1.0)
+                    val = p * qty_now * fx.get(self.get_currency_for_ticker(t), 23.0)
+                    current_values_czk[t] = val
+                    total_portfolio_now += val
+            
+            actual_weights = {}
+            if total_portfolio_now > 0:
+                actual_weights = {t: val / total_portfolio_now for t, val in current_values_czk.items()}
+            else:
+                actual_weights = {t: w for t, w in TARGETS.items()}
+                total_portfolio_now = 100000.0
+
+            daily_pct_changes = hist_prices_adj.pct_change().fillna(0)
+            w_vector = np.array([actual_weights.get(col, 0.0) for col in hist_prices_adj.columns])
+            portfolio_daily_returns = daily_pct_changes.dot(w_vector)
+            norm_curve = (1 + portfolio_daily_returns).cumprod()
+            scaling_factor = total_portfolio_now / norm_curve.iloc[-1]
+            sim_curve = norm_curve * scaling_factor
+
+            qty_matrix = pd.DataFrame(0.0, index=hist_prices_raw.index, columns=all_tickers)
+            
+            for t, lots in ledger_dt.items():
+                for lot in lots:
+                    # Prevence pádu grafu, pokud je ledger_date hluboko v historii (před naší aktuální iterací)
+                    if lot['date'] >= qty_matrix.index[0]:
                         qty_matrix.loc[lot['date']:, t] += lot['qty']
-                        
-                # B) Přičteme i historické nákupy, které už byly prodány
-                # Od data nákupu do data prodeje jsme je vlastnili, pak jejich počet klesá
-                for s in sales_dt:
-                    t = s['ticker']
-                    qty_matrix.loc[s['buy_date']:, t] += s['qty']
-                    qty_matrix.loc[s['sell_date']:, t] -= s['qty']
+                    else:
+                        qty_matrix.loc[:, t] += lot['qty']
+                    
+            for s in sales_dt:
+                t = s['ticker']
+                if s['buy_date'] >= qty_matrix.index[0]: qty_matrix.loc[s['buy_date']:, t] += s['qty']
+                else: qty_matrix.loc[:, t] += s['qty']
                 
-                # Výpočet reálné hodnoty portfolia v CZK den po dni
-                real_portfolio_curve = pd.Series(0.0, index=hist_prices_raw.index)
+                if s['sell_date'] >= qty_matrix.index[0]: qty_matrix.loc[s['sell_date']:, t] -= s['qty']
+                else: qty_matrix.loc[:, t] -= s['qty']
+            
+            real_portfolio_curve = pd.Series(0.0, index=hist_prices_raw.index)
+            for t in all_tickers:
+                if t in hist_prices_raw.columns:
+                    p_factor = 0.01 if t.endswith(".L") else 1.0
+                    fx_val = fx.get(self.get_currency_for_ticker(t), 23.0)
+                    real_portfolio_curve += qty_matrix[t] * hist_prices_raw[t] * p_factor * fx_val
+
+            self.ax1.clear()
+            
+            if has_buys:
+                self.ax1.plot(sim_curve[:first_buy_dt].index, sim_curve[:first_buy_dt].values, 
+                              color='grey', linestyle='--', alpha=0.6, label="Simulace (hypotetická historie)")
+                real_data_to_plot = real_portfolio_curve[real_portfolio_curve.index >= first_buy_dt]
+                self.ax1.plot(real_data_to_plot.index, real_data_to_plot.values, 
+                              color='#1976D2', linewidth=2, label="Reálné portfolio (vč. nákupů a prodejů)")
+                self.ax1.axvline(x=first_buy_dt, color='red', linestyle='-', alpha=0.4)
+            else:
+                self.ax1.plot(sim_curve.index, sim_curve.values, color='grey', linestyle='--', alpha=0.6, label="Simulace")
+                
+            self.ax1.set_title("Vývoj hodnoty portfolia při reinvestici dividend (simulace a realita)")
+            self.ax1.grid(True, linestyle='--', alpha=0.5)
+            self.ax1.legend()
+            self.ax1.set_ylabel("Hodnota [Kč]")
+
+            from matplotlib.ticker import FuncFormatter
+            def custom_formatter(x, pos):
+                if abs(x) >= 1000000: return f'{x*1e-6:.1f} mil.'.replace('.', ',')
+                elif abs(x) >= 1000: return f'{x*1e-3:.0f} tis.'.replace('.', ',')
+                return f'{x:.0f}'
+            
+            self.ax1.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
+
+            years = sorted(list(set(hist_prices_adj.index.year)))
+            growth_vals, div_vals, totals, colors, labels = [], [], [],[], []
+            div_history = {t:[] for t in all_tickers}
+            real_divs_list = getattr(self, 'real_dividends',[])
+            
+            for y in years:
+                y_start, y_end = f"{y}-01-01", f"{y}-12-31"
+                
+                sub_sim = sim_curve.loc[y_start:y_end]
+                if sub_sim.empty: continue
+                sim_v_start, sim_v_end = sub_sim.iloc[0], sub_sim.iloc[-1]
+                
+                sub_real = real_portfolio_curve.loc[y_start:y_end]
+                real_v_start = sub_real.iloc[0] if not sub_real.empty else 0.0
+                real_v_end = sub_real.iloc[-1] if not sub_real.empty else 0.0
+
+                buys_cost = 0.0
+                for t, lots in self.ledger.items():
+                    for l in lots:
+                        if l['date'].startswith(str(y)):
+                            buys_cost += float(l['price_at_buy']) * l['qty'] * fx.get(self.get_currency_for_ticker(t), 23.0)
+                
+                for s in self.sales_history:
+                    if s['buy_date'].startswith(str(y)):
+                        buys_cost += float(s['buy_price']) * s['qty'] * fx.get(self.get_currency_for_ticker(s['ticker']), 23.0)
+                        
+                sales_income = sum(s['sell_price'] * s['qty'] * fx.get(self.get_currency_for_ticker(s['ticker']), 23.0) 
+                                   for s in self.sales_history if s['sell_date'].startswith(str(y)))
+                
+                year_divs = 0
+                rd_year = [d for d in real_divs_list if d['date'].startswith(str(y))]
+                
                 for t in all_tickers:
-                    if t in hist_prices_raw.columns:
-                        # Převod britských pencí na libry u titulů .L
-                        p_factor = 0.01 if t.endswith(".L") else 1.0
-                        # Pro tržní hodnotu reálného portfolia MUSÍME použít Raw Close (skutečné tehdejší ceny)
-                        fx_val = fx.get(self.get_currency_for_ticker(t), 23.0)
-                        real_portfolio_curve += qty_matrix[t] * hist_prices_raw[t] * p_factor * fx_val
+                    meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
+                    if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
+                        div_history[t].append(0)
+                        continue
 
-                # --- VYKRESLENÍ PRVNÍHO GRAFU (Čáry) ---
-                self.ax1.clear()
-                
-                if has_buys:
-                    # Šedá čára (Simulace) - co by se stalo, kdybyste dnešní sumu zainvestovali před 5 lety
-                    self.ax1.plot(sim_curve[:first_buy_dt].index, sim_curve[:first_buy_dt].values, 
-                                  color='grey', linestyle='--', alpha=0.6, label="Simulace (hypotetická historie)")
+                    t_div = 0 
                     
-                    # Modrá čára (Realita) - skutečná hodnota portfolia od prvního nákupu
-                    # Ořezáváme data před prvním nákupem, aby graf nezačínal na nule v roce 2021
-                    real_data_to_plot = real_portfolio_curve[real_portfolio_curve.index >= first_buy_dt]
-                    self.ax1.plot(real_data_to_plot.index, real_data_to_plot.values, 
-                                  color='#1976D2', linewidth=2, label="Reálné portfolio (vč. nákupů a prodejů)")
-                    
-                    self.ax1.axvline(x=first_buy_dt, color='red', linestyle='-', alpha=0.4)
-                else:
-                    self.ax1.plot(sim_curve.index, sim_curve.values, color='grey', linestyle='--', alpha=0.6, label="Simulace")
-                    
-                self.ax1.set_title("Vývoj hodnoty portfolia při reinvestici dividend (simulace a realita)")
-                self.ax1.grid(True, linestyle='--', alpha=0.5)
-                self.ax1.legend()
-                self.ax1.set_ylabel("Hodnota [Kč]")
-
-                # inteligentní popisky osy Y
-                from matplotlib.ticker import FuncFormatter
-                def custom_formatter(x, pos):
-                    if abs(x) >= 1000000: return f'{x*1e-6:.1f} mil.'.replace('.', ',')
-                    elif abs(x) >= 1000: return f'{x*1e-3:.0f} tis.'.replace('.', ',')
-                    return f'{x:.0f}'
-                
-                # Aplikováno na osu ihned po vyčištění grafu
-                self.ax1.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
-
-                # --- VYKRESLENÍ DRUHÉHO GRAFU (Roční sloupce) ---
-                years = sorted(list(set(hist_prices_adj.index.year)))
-                growth_vals, div_vals, totals, colors, labels = [], [], [], [], []
-                div_history = {t:[] for t in all_tickers}
-                
-                # Zrychlené načtení dat z Yahoo a z lokální JSON paměti
-                all_divs = {t: self._safe_get_dividends(t) for t in all_tickers}
-                real_divs_list = getattr(self, 'real_dividends',[])
-                
-                for y in years:
-                    y_start, y_end = f"{y}-01-01", f"{y}-12-31"
-                    
-                    # Načtení hodnot z křivek pro daný rok
-                    sub_sim = sim_curve.loc[y_start:y_end]
-                    if sub_sim.empty: continue
-                    sim_v_start, sim_v_end = sub_sim.iloc[0], sub_sim.iloc[-1]
-                    
-                    sub_real = real_portfolio_curve.loc[y_start:y_end]
-                    real_v_start = sub_real.iloc[0] if not sub_real.empty else 0.0
-                    real_v_end = sub_real.iloc[-1] if not sub_real.empty else 0.0
-
-                    # 1. Výpočet Cash-Flow za daný rok (Vklady a Výběry)
-                    buys_cost = 0.0
-                    # Započteme nákupy, které stále držíme
-                    for t, lots in self.ledger.items():
-                        for l in lots:
-                            if l['date'].startswith(str(y)):
-                                buys_cost += float(l['price_at_buy']) * l['qty'] * fx.get(self.get_currency_for_ticker(t), 23.0)
-                    
-                    # Započteme i nákupy, které jsme už prodali (musí být v nákladech)
-                    for s in self.sales_history:
-                        if s['buy_date'].startswith(str(y)):
-                            buys_cost += float(s['buy_price']) * s['qty'] * fx.get(self.get_currency_for_ticker(s['ticker']), 23.0)
-                            
-                    # Příjmy z prodejů
-                    sales_income = sum(s['sell_price'] * s['qty'] * fx.get(self.get_currency_for_ticker(s['ticker']), 23.0) 
-                                       for s in self.sales_history if s['sell_date'].startswith(str(y)))
-                    
-                    # 2. Výpočet dividend
-                    year_divs = 0
-                    
-                    # Filtrujeme reálné, zdaněné a exaktní dividendy z CSV pro tento rok
-                    rd_year = [d for d in real_divs_list if d['date'].startswith(str(y))]
-                    
-                    for t in all_tickers:
-                        # --- Ochrana akumulačních ETF ---
-                        meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
-                        if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
-                            div_history[t].append(0)
-                            continue
-
-                        t_div = 0 
-                        
-                        # =========================================================
-                        # A) REÁLNÁ HISTORIE (roky, kdy už jste reálně nakupoval)
-                        # =========================================================
-                        if has_buys and y >= first_buy_year:
-                            covered_yahoo_dates =[]
-                            # 1. Zpracování exaktních dividend naimportovaných z IBKR
-                            for rd in rd_year:
-                                if rd['ticker'] == t:
-                                    t_div += rd['gross'] * fx.get(rd.get('currency', 'USD'), 23.0)
-                                    covered_yahoo_dates.append(datetime.strptime(rd['date'], "%Y-%m-%d").date())
-                                    
-                            # 2. Inteligentní Fallback na Yahoo (pokud jste ještě CSV za poslední měsíc nestáhl)
-                            try:
-                                d_data = all_divs[t].loc[y_start:y_end]
-                                for d_dt, amt in d_data.items():
-                                    # Pojistka: Máme už tuto dividendu pokrytou z IBKR výpisu?
-                                    is_covered = False
-                                    for rd_date in covered_yahoo_dates:
-                                        if 0 <= (rd_date - d_dt.date()).days <= 90:
-                                            is_covered = True
-                                            break
-                                    if is_covered: continue
-                                    
-                                    d_s = pd.Timestamp(d_dt.date())
-                                    q = sum(l['qty'] for l in ledger_dt.get(t,[]) if l['date'] < d_s)
-                                    q += sum(s['qty'] for s in sales_dt if s['ticker'] == t 
-                                             and s['buy_date'] < d_s and s['sell_date'] >= d_s)
-                                             
-                                    currency = self.get_currency_for_ticker(t)
-                                    t_div += (amt / (100.0 if t.endswith(".L") else 1.0) * q * fx.get(currency, 23.0))
-                            except: pass
-                            
-                        # =========================================================
-                        # B) SIMULOVANÁ HISTORIE
-                        # =========================================================
-                        else:
-                            try:
-                                d_data = all_divs[t].loc[y_start:y_end]
-                                for d_dt, amt in d_data.items():
-                                    # PŘEVOD NA ČISTÝ STRING: Odstraní problémy s časovými zónami
-                                    date_str = d_dt.strftime('%Y-%m-%d')
-                                    
-                                    # MUSÍME POUŽÍT RAW Cenu (hist_prices_raw), jinak je výnos uměle obří!
-                                    hist_price = hist_prices_raw[t].loc[:date_str]
-                                    if not hist_price.empty:
-                                        p_val = hist_price.iloc[-1]
-                                    else:
-                                        p_val = hist_prices_raw[t].bfill().iloc[0]
-                                        
-                                    if pd.notna(p_val) and p_val > 0:
-                                        # Yahoo vrací amt i p_val ve STEJNÉ MĚNĚ (Pence/Pence, USD/USD).
-                                        # Odstraněn p_factor. Výsledek je nyní vždy čisté % (Yield).
-                                        div_yield = amt / p_val
-                                        
-                                        # Bezpečné získání simulované hodnoty i v případě víkendů/svátků
-                                        try:
-                                            sim_val = sub_sim.loc[date_str]
-                                            if isinstance(sim_val, pd.Series): sim_val = sim_val.iloc[0]
-                                        except KeyError:
-                                            prev_data = sub_sim.loc[:date_str]
-                                            sim_val = prev_data.iloc[-1] if not prev_data.empty else sub_sim.iloc[0]
-                                            
-                                        sim_allocated_czk = sim_val * actual_weights.get(t, 0.0)
-                                        t_div += sim_allocated_czk * div_yield
-                            except: pass
-
-                        year_divs += t_div
-                        div_history[t].append(t_div) 
-
-                    # 3. Finální výpočet PnL (Zisku a Ztráty)
-                    # total_pnl je přesný Total Return vč. reinvestic (protože používáme upravené ceny).
-                    # growth_only je vizuální "zbytek", aby se po nasčítání se žlutým sloupcem 
-                    # trefila přesná výška Total Returnu.
-                    if not has_buys or y < first_buy_year:
-                        # SIMULACE (Šedé sloupce - žádné peněžní toky se nekonají)
-                        total_pnl = sim_v_end - sim_v_start
-                        growth_only = total_pnl - year_divs
-                        colors.append('grey')
-                        base = sim_v_start if sim_v_start > 0 else (sim_v_end / 1.1)
+                    if has_buys and y >= first_buy_year:
+                        covered_yahoo_dates =[]
+                        for rd in rd_year:
+                            if rd['ticker'] == t:
+                                t_div += rd['gross'] * fx.get(rd.get('currency', 'USD'), 23.0)
+                                covered_yahoo_dates.append(datetime.strptime(rd['date'], "%Y-%m-%d").date())
+                                
+                        try:
+                            d_data = all_divs[t].loc[y_start:y_end]
+                            for d_dt, amt in d_data.items():
+                                is_covered = False
+                                for rd_date in covered_yahoo_dates:
+                                    if 0 <= (rd_date - d_dt.date()).days <= 90:
+                                        is_covered = True
+                                        break
+                                if is_covered: continue
+                                
+                                d_s = pd.Timestamp(d_dt.date())
+                                q = sum(l['qty'] for l in ledger_dt.get(t,[]) if l['date'] < d_s)
+                                q += sum(s['qty'] for s in sales_dt if s['ticker'] == t 
+                                         and s['buy_date'] < d_s and s['sell_date'] >= d_s)
+                                         
+                                currency = self.get_currency_for_ticker(t)
+                                t_div += (amt / (100.0 if t.endswith(".L") else 1.0) * q * fx.get(currency, 23.0))
+                        except: pass
                         
                     else:
-                        # REALITA (Zelené/Červené sloupce - zohledněn prodej i nákup)
-                        # Vzorec: (Konečná hodnota - Počáteční hodnota) + Příjmy z prodejů - Výdaje za nákupy
-                        total_pnl = (real_v_end - real_v_start) + sales_income - buys_cost
-                        growth_only = total_pnl - year_divs
-                        colors.append('#4CAF50' if total_pnl >= 0 else '#E53935')
-                        
-                        base = real_v_start + buys_cost
-                        if base == 0: base = 1 # Ochrana proti dělení nulou
+                        try:
+                            d_data = all_divs[t].loc[y_start:y_end]
+                            for d_dt, amt in d_data.items():
+                                date_str = d_dt.strftime('%Y-%m-%d')
+                                
+                                hist_price = hist_prices_raw[t].loc[:date_str]
+                                if not hist_price.empty: p_val = hist_price.iloc[-1]
+                                else: p_val = hist_prices_raw[t].bfill().iloc[0]
+                                    
+                                if pd.notna(p_val) and p_val > 0:
+                                    div_yield = amt / p_val
+                                    try:
+                                        sim_val = sub_sim.loc[date_str]
+                                        if isinstance(sim_val, pd.Series): sim_val = sim_val.iloc[0]
+                                    except KeyError:
+                                        prev_data = sub_sim.loc[:date_str]
+                                        sim_val = prev_data.iloc[-1] if not prev_data.empty else sub_sim.iloc[0]
+                                        
+                                    sim_allocated_czk = sim_val * actual_weights.get(t, 0.0)
+                                    t_div += sim_allocated_czk * div_yield
+                        except: pass
 
-                    growth_vals.append(growth_only)
-                    div_vals.append(year_divs)
-                    totals.append(total_pnl)
-                    
-                    pct = (total_pnl / base * 100) if base > 0 else 0
-                    lbl_text = f"{pct:+.1f}%\n{total_pnl/1000:+.1f}k".replace('.', ',')
-                    labels.append(lbl_text)
+                    year_divs += t_div
+                    div_history[t].append(t_div) 
 
-                self.ax2.clear()
-                self.ax2.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
-                
-                x = np.arange(len(growth_vals))
-                
-                for i in range(len(x)):
-                    g = growth_vals[i]  # Růst / Ztráta ceny
-                    d = div_vals[i]     # Hodnota dividend
-                    t = totals[i]       # Total Return (g + d)
-                    c_base = colors[i]  # Základní barva z předchozí logiky (zelená/šedá/červená)
+                if not has_buys or y < first_buy_year:
+                    total_pnl = sim_v_end - sim_v_start
+                    growth_only = total_pnl - year_divs
+                    colors.append('grey')
+                    base = sim_v_start if sim_v_start > 0 else (sim_v_end / 1.1)
                     
-                    if g >= 0:
-                        # STANDARDNÍ RŮST (Vše je v plusu)
-                        self.ax2.bar(x[i], g, color=c_base, label='Růst ceny' if i==0 else "")
+                else:
+                    total_pnl = (real_v_end - real_v_start) + sales_income - buys_cost
+                    growth_only = total_pnl - year_divs
+                    colors.append('#4CAF50' if total_pnl >= 0 else '#E53935')
+                    
+                    base = real_v_start + buys_cost
+                    if base == 0: base = 1 
+
+                growth_vals.append(growth_only)
+                div_vals.append(year_divs)
+                totals.append(total_pnl)
+                
+                pct = (total_pnl / base * 100) if base > 0 else 0
+                lbl_text = f"{pct:+.1f}%\n{total_pnl/1000:+.1f}k".replace('.', ',')
+                labels.append(lbl_text)
+
+            self.ax2.clear()
+            self.ax2.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
+            
+            x = np.arange(len(growth_vals))
+            
+            for i in range(len(x)):
+                g = growth_vals[i]; d = div_vals[i]; t = totals[i]; c_base = colors[i]
+                if g >= 0:
+                    self.ax2.bar(x[i], g, color=c_base, label='Růst ceny' if i==0 else "")
+                    if d > 0: self.ax2.bar(x[i], d, bottom=g, color='#FFC107', label='Dividendy' if i==0 else "")
+                else:
+                    if t < 0:
+                        if c_base == '#E53935': light_c = '#EF9A9A'; dark_c = '#C62828'
+                        else: light_c = 'lightgrey'; dark_c = 'grey'
+                        self.ax2.bar(x[i], t, color=light_c, label='Výsledná ztráta' if i==0 else "")
+                        if d > 0: self.ax2.bar(x[i], -d, bottom=t, color=dark_c, label='Ztráta pokrytá div.' if i==0 else "")
+                    else:
+                        self.ax2.bar(x[i], g, color=c_base, label='Ztráta ceny' if i==0 else "")
                         if d > 0:
-                            self.ax2.bar(x[i], d, bottom=g, color='#FFC107', label='Dividendy' if i==0 else "")
-                            
-                    else:
-                        # POKLES CENY AKCIÍ
-                        if t < 0:
-                            # 1) SCÉNÁŘ: Pokles je větší než dividenda (Total je záporný)
-                            # Světlejší část ukazuje celkovou výslednou ztrátu
-                            # Tmavší část ukazuje ztrátu, kterou smazala dividenda
-                            
-                            # Odvození tmavší/světlejší barvy podle toho, zda je sloupec Reálný (červený) nebo Simulace (šedý)
-                            if c_base == '#E53935': # Červená
-                                light_c = '#EF9A9A' # Světle červená
-                                dark_c = '#C62828'  # Tmavě červená
-                            else: # Šedá
-                                light_c = 'lightgrey'
-                                dark_c = 'grey'
-                                
-                            # Vykreslení:
-                            # Horní díl (k Total Returnu)
-                            self.ax2.bar(x[i], t, color=light_c, label='Výsledná ztráta' if i==0 else "")
-                            # Spodní díl (vykrytý dividendou)
-                            if d > 0:
-                                self.ax2.bar(x[i], -d, bottom=t, color=dark_c, label='Ztráta pokrytá div.' if i==0 else "")
-                                
-                        else:
-                            # 2) SCÉNÁŘ: Pokles ceny, ale Dividenda zachránila rok do Plusu
-                            # Šedý/Červený sloupec zůstává ukotven na nule a jde do mínusu
-                            self.ax2.bar(x[i], g, color=c_base, label='Ztráta ceny' if i==0 else "")
-                            
-                            # Žlutá dividenda se rozdělí na Čistý zisk (tmavá) a Kompenzaci (světlá)
-                            if d > 0:
-                                # Tmavě žlutá (Oranžová) = Skutečný čistý zisk
-                                self.ax2.bar(x[i], t, color='#FFA000', label='Čistý zisk z div.' if i==0 else "")
-                                # Světle žlutá = Část dividendy, která padla na zalepení díry
-                                self.ax2.bar(x[i], abs(g), bottom=t, color='#FFD54F', label='Div. kryjící ztrátu' if i==0 else "")
+                            self.ax2.bar(x[i], t, color='#FFA000', label='Čistý zisk z div.' if i==0 else "")
+                            self.ax2.bar(x[i], abs(g), bottom=t, color='#FFD54F', label='Div. kryjící ztrátu' if i==0 else "")
 
-                self.ax2.grid(True, linestyle='--', alpha=0.5)
-                self.ax2.set_ylabel("Zisk [Kč]")
-                
-                # Zjednodušení legendy, aby v ní nebylo milion položek z cyklu výše
-                legend_elements =[
-                    Patch(facecolor='grey', label='Simulace (růst/ztráta)'), 
-                    Patch(facecolor='#4CAF50', label='Reálný zisk'),
-                    Patch(facecolor='#E53935', label='Reálná ztráta'),
-                    Patch(facecolor='#FFC107', label='Dividendy'),
-                    Patch(facecolor='#FFA000', label='Čistý zisk (když div. porazí ztrátu)')
-                ]
-                self.ax2.legend(handles=legend_elements, loc="lower left", fontsize=9)
-                
-                v_min, v_max = min(min(growth_vals), min(totals), 0), max(max(totals), max(growth_vals), 0)
-                y_range = max(v_max - v_min, 2000)
-                self.ax2.set_ylim(v_min - (y_range * 0.4), v_max + (y_range * 0.4))
-                self.ax2.set_xticks(x); self.ax2.set_xticklabels([str(y) for y in years])
-                
-                for i in x:
-                    y_val = totals[i]
-                    va = 'bottom' if y_val >= 0 else 'top'
-                    offset = (y_range * 0.05) if y_val >= 0 else -(y_range * 0.05)
-                    self.ax2.text(i, y_val + offset, labels[i], ha='center', va=va, fontsize=9, fontweight='bold')
+            self.ax2.grid(True, linestyle='--', alpha=0.5)
+            self.ax2.set_ylabel("Zisk[Kč]")
+            
+            legend_elements =[
+                Patch(facecolor='grey', label='Simulace (růst/ztráta)'), 
+                Patch(facecolor='#4CAF50', label='Reálný zisk'),
+                Patch(facecolor='#E53935', label='Reálná ztráta'),
+                Patch(facecolor='#FFC107', label='Dividendy'),
+                Patch(facecolor='#FFA000', label='Čistý zisk (když div. porazí ztrátu)')
+            ]
+            self.ax2.legend(handles=legend_elements, loc="lower left", fontsize=9)
+            
+            v_min, v_max = min(min(growth_vals), min(totals), 0), max(max(totals), max(growth_vals), 0)
+            y_range = max(v_max - v_min, 2000)
+            self.ax2.set_ylim(v_min - (y_range * 0.4), v_max + (y_range * 0.4))
+            self.ax2.set_xticks(x); self.ax2.set_xticklabels([str(y) for y in years])
+            
+            for i in x:
+                y_val = totals[i]
+                va = 'bottom' if y_val >= 0 else 'top'
+                offset = (y_range * 0.05) if y_val >= 0 else -(y_range * 0.05)
+                self.ax2.text(i, y_val + offset, labels[i], ha='center', va=va, fontsize=9, fontweight='bold')
 
-                self.ax3.clear()
-                self.ax3.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
-                
-                # --- ŘAZENÍ VRSTEV (PODLE CÍLOVÝCH VAH A VÝNOSU) ---
-                # Řadíme podle očekávaného ročního přínosu 
-                # (Cílová váha * % Výnos z databáze).
-                div_sums_for_sorting = {}
-                stock_db = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
-                
-                for t in all_tickers:
-                    target_w = TARGETS.get(t, 0.0)
-                    yield_pct = stock_db.get(t, {}).get('yield', 0.0)
-                    div_sums_for_sorting[t] = target_w * yield_pct
-                        
-                # Seřadíme od největšího očekávaného plátce po nejmenšího
-                sorted_tickers = sorted(all_tickers, key=lambda x: div_sums_for_sorting.get(x, 0.0), reverse=True)
-                
-                # Pro samotné vykreslení vybereme jen ty, které mají alespoň nějakou dividendu celkově v historii
-                active_tickers =[t for t in sorted_tickers if sum(div_history[t]) > 0]
-                
-                if active_tickers:
-                    # Obrátíme pořadí: největší plátci budou mít indexy, 
-                    # které stackplot vykreslí jako nejvyšší vrstvy.
-                    plot_tickers = active_tickers[::-1]
-                    stack_data = [div_history[t] for t in plot_tickers]
+            self.ax3.clear()
+            self.ax3.yaxis.set_major_formatter(FuncFormatter(custom_formatter))
+            
+            div_sums_for_sorting = {}
+            stock_db = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+            
+            for t in all_tickers:
+                target_w = TARGETS.get(t, 0.0)
+                yield_pct = stock_db.get(t, {}).get('yield', 0.0)
+                div_sums_for_sorting[t] = target_w * yield_pct
                     
-                    # Bezpečné přiřazení barev
-                    c_map = plt.cm.tab20.colors
-                    plot_colors = [c_map[i % len(c_map)] for i in range(len(active_tickers))]
-                    
-                    self.ax3.stackplot(years, stack_data, labels=plot_tickers, colors=plot_colors, alpha=0.85)
-                    self.ax3.set_title("Zdroje dividend v čase (Vrstvový graf)")
-                    self.ax3.set_ylabel("Dividendy [Kč]")
-                    self.ax3.set_xticks(years)
-                    self.ax3.set_xticklabels([str(y) for y in years])
-                    self.ax3.grid(True, linestyle='--', alpha=0.5)
-                    
-                    handles, labels = self.ax3.get_legend_handles_labels()
-                    self.ax3.legend(handles[::-1], labels[::-1], loc='upper left', ncol=math.ceil(len(active_tickers)/4), fontsize=8)
-                else:
-                    self.ax3.text(0.5, 0.5, "Zatím žádné dividendy", ha='center', va='center')
+            sorted_tickers = sorted(all_tickers, key=lambda x: div_sums_for_sorting.get(x, 0.0), reverse=True)
+            active_tickers =[t for t in sorted_tickers if sum(div_history[t]) > 0]
+            
+            if active_tickers:
+                plot_tickers = active_tickers
+                stack_data = [div_history[t] for t in plot_tickers]
+                
+                c_map = plt.cm.tab20.colors
+                plot_colors = [c_map[i % len(c_map)] for i in range(len(active_tickers))]
+                
+                self.ax3.stackplot(years, stack_data, labels=plot_tickers, colors=plot_colors, alpha=0.85)
+                self.ax3.set_title("Zdroje dividend v čase (Vrstvový graf)")
+                self.ax3.set_ylabel("Dividendy [Kč]")
+                self.ax3.set_xticks(years)
+                self.ax3.set_xticklabels([str(y) for y in years])
+                self.ax3.grid(True, linestyle='--', alpha=0.5)
+                
+                handles, labels = self.ax3.get_legend_handles_labels()
+                self.ax3.legend(handles, labels, loc='upper left', ncol=math.ceil(len(active_tickers)/4), fontsize=8)
+            else:
+                self.ax3.text(0.5, 0.5, "Zatím žádné dividendy", ha='center', va='center')
 
-                self.canvas.draw()
-                self.root.after(0, lambda: self.status_lbl.config(text=f"Aktualizováno: {datetime.now().strftime('%H:%M:%S')}", fg="green"))
-                
-            except Exception as e: 
-                print(f"Error: {e}")
-                self.root.after(0, lambda: self.status_lbl.config(text="Chyba výpočtu", fg="red"))
+            self.canvas.draw()
+            
+            if is_final:
+                self.status_lbl.config(text=f"Aktualizováno: {datetime.now().strftime('%H:%M:%S')}", fg="green")
+        except Exception as e:
+            print(f"Error rendering graphs: {e}")
+            self.status_lbl.config(text="Chyba výpočtu grafu", fg="red")
 
     # --------------------------------------------------------------------------
     # DAŇOVÝ MOTOR (ONE-CLICK EXPORT A PDF)
