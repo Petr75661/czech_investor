@@ -3044,7 +3044,7 @@ class CzechInvestorApp:
                 start_date = f"{y}-01-01"
                 end_date = f"{y+1}-01-01" if y < current_year else None
                 
-                # ZMĚNA: Používáme přesný rok od-do
+                # Používáme přesný rok od-do
                 downloaded = self._safe_yf_download(all_tickers, start=start_date, end=end_date, auto_adjust=False)
                 
                 if downloaded.empty or 'Close' not in downloaded:
@@ -3083,6 +3083,9 @@ class CzechInvestorApp:
                 # Trik pro zrychlení UI: Animaci ozubených kol schováme hned, jak máme aktuální rok (i=0)
                 if i == 0:
                     self.root.after(0, lambda: self.hide_loading(self.dash_loading_state))
+                    # Povolíme tlačítko pro Export PDF okamžitě. 
+                    # Data k dividendám pro daňový report už jsou totiž bezpečně stažena v Cache paměti.
+                    self.root.after(0, lambda: self.btn_export_tax.config(state=tk.NORMAL))
 
                 is_final = (i == len(years_to_fetch) - 1)
                 
@@ -3502,7 +3505,8 @@ class CzechInvestorApp:
                 continue
 
             try:
-                divs = yf.Ticker(t).dividends
+                # načtení dat z mezipaměti
+                divs = self._safe_get_dividends(t)
                 year_divs = divs[divs.index.year == year_to_report]
                 if year_divs.empty: continue
                 
