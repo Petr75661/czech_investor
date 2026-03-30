@@ -536,44 +536,40 @@ class CzechInvestorApp:
                 
                 close_data = data['Close'].replace(0.0, np.nan)
                 
-                # 2. KONTROLA INTEGRITY (vynechá se při postupném do-stahování)
-                if period == "5y" and not start:
-                    if len(close_data) < 1000:
-                        raise ValueError("Vrácena nekompletní historie.")
-
-                    check_dt = datetime.now() - timedelta(days=365 * 2)
-                    closest_idx = close_data.index.get_indexer([check_dt], method='nearest')[0]
-                    check_date_real = close_data.index[closest_idx]
+                # 2. UNIVERZÁLNÍ KONTROLA INTEGRITY (CHUNK-AWARE SPOT-CHECK)
+                # Porovnáváme počet platných dnů každé akcie oproti celkovému počtu dnů ve staženém úseku.
+                # Spolehlivě odhalí chybu yfinance, kdy pro jeden ticker uprostřed stahování vypadne spojení.
+                if isinstance(close_data, pd.DataFrame) and len(close_data) > 10:
+                    max_len = len(close_data)
+                    suspicious_tickers =[]
+                    valid_counts = {}
                     
-                    if isinstance(close_data, pd.DataFrame):
-                        suspicious_tickers = [t for t in expected_tickers if pd.isna(close_data.at[check_date_real, t])]
-                    else:
-                        suspicious_tickers = expected_tickers if pd.isna(close_data.iloc[closest_idx]) else []
-
-                    if suspicious_tickers:
-                        # Ignorujeme měnové páry v kontrolním bodu, jsou náchylné na krátkodobé výpadky
-                        # Akcie jsou prioritou pro kontrolu integrity
-                        stocks_only = [t for t in suspicious_tickers if "=" not in t]
-                        
-                        if stocks_only:
-                            start_c = (check_date_real - timedelta(days=5)).strftime('%Y-%m-%d')
-                            end_c = (check_date_real + timedelta(days=5)).strftime('%Y-%m-%d')
-                            
-                            check_data = yf.download(stocks_only, start=start_c, end=end_c,
-                                                     progress=False, auto_adjust=auto_adjust, actions=False, threads=False)
-                            
-                            if check_data is not None and not check_data.empty and 'Close' in check_data:
-                                c_close = check_data['Close']
-                                found_in_check = []
-                                for t in stocks_only:
-                                    if isinstance(c_close, pd.DataFrame):
-                                        if t in c_close.columns and not c_close[t].dropna().empty:
-                                            found_in_check.append(t)
-                                    elif not c_close.dropna().empty:
-                                        found_in_check.append(t)
+                    for t in expected_tickers:
+                        if "=" in t: continue # Ignorujeme měny, mají jiné kalendáře svátků
+                        if t in close_data.columns:
+                            valid_len = close_data[t].count() # Počet non-NaN hodnot
+                            valid_counts[t] = valid_len
+                            # Pokud ticker chybí ve více než 50 % dnů oproti zbytku trhu:
+                            if valid_len < (max_len * 0.5):
+                                suspicious_tickers.append(t)
                                 
-                                if found_in_check:
-                                    raise ValueError(f"Data pro {found_in_check} v balíku chybí, ale na serveru jsou.")
+                    if suspicious_tickers:
+                        # Ověření, zda data skutečně neexistují (např. proběhlo IPO uprostřed daného roku),
+                        # nebo jde o chybu API. Zkusíme stáhnout jen tyto problémové tickery samostatně.
+                        if start and end:
+                            check_data = yf.download(suspicious_tickers, start=start, end=end, progress=False, auto_adjust=auto_adjust, actions=False, threads=False)
+                        else:
+                            check_data = yf.download(suspicious_tickers, period=period, interval=interval, progress=False, auto_adjust=auto_adjust, actions=False, threads=False)
+                            
+                        if check_data is not None and not check_data.empty and 'Close' in check_data:
+                            c_close = check_data['Close']
+                            for t in suspicious_tickers:
+                                t_valid_len = c_close[t].count() if isinstance(c_close, pd.DataFrame) else c_close.count()
+                                
+                                # Pokud samostatné stažení najde výrazně více dat, původní hromadný balík byl poškozený
+                                orig_valid_len = valid_counts.get(t, 0)
+                                if t_valid_len > orig_valid_len + 5: # Tolerance 5 dnů
+                                    raise ValueError(f"Detekován částečný výpadek dat pro {t}. Na serveru data jsou, ale v hromadném balíku chybí.")
 
                 # 3. FINÁLNÍ VERIFIKACE
                 missing = []
