@@ -3033,7 +3033,7 @@ class CzechInvestorApp:
             all_divs = {t: self._safe_get_dividends(t) for t in all_tickers}
             
             current_year = datetime.now().year
-            years_to_fetch =[current_year, current_year - 1, current_year - 2, current_year - 3, current_year - 4]
+            years_to_fetch =[current_year, current_year - 1, current_year - 2, current_year - 3, current_year - 4, current_year - 5]
             
             accumulated_adj = pd.DataFrame()
             accumulated_raw = pd.DataFrame()
