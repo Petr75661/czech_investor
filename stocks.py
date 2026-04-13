@@ -350,7 +350,7 @@ class CzechInvestorApp:
                     
                     if "stock_db" in data:
                         self.stock_db_from_json = data["stock_db"]
-                        # OPRAVA: Načtení měn pro VŠECHNY evidované akcie, i ty minulé
+                        # Načtení měn pro VŠECHNY evidované akcie, i ty minulé
                         for t, meta in self.stock_db_from_json.items():
                             if "currency" in meta and t not in CURRENCIES:
                                 CURRENCIES[t] = meta["currency"]
