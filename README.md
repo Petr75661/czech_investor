@@ -69,7 +69,7 @@ Výchozí nastavení databáze je koncipováno jako **"all-weather dividend grow
 > * **Koncentrace v BDC:** Tituly jako ARCC, MAIN a HTGC jsou citlivé na úrokové sazby a stav ekonomiky USA, což může způsobit vyšší volatilitu NAV (čisté hodnoty aktiv).
 > * **Měnové riziko:** Investujete v cizích měnách. Posílení CZK vůči USD/GBP technicky snižuje hodnotu vašeho portfolia v korunách, i když akcie samotné rostou.
 > * **Závislost na datech:** Aplikace využívá API Yahoo Finance. I když implementuje *integritní spot-check* a vlastní cachování dividend, dlouhodobý výpadek externích zdrojů může omezit analytické funkce.
-> * **Sektorová rizika:** Portfolio obsahuje specifické sektory (REITs, BDC), které podléhají jiným daňovým a regulačním pravidlům než běžné korporátní akcie.
+> * **Sektorová rizika:** Portfolio obsahuje specifické sektory (REITs, BDC, utilities), které podléhají jiným daňovým a regulačním pravidlům než běžné korporátní akcie.
 
 ---
 
