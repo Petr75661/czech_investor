@@ -2813,13 +2813,16 @@ class CzechInvestorApp:
         self.ax_pie.clear(); self.ax_div_pie.clear(); self.ax_curve.clear(); self.ax_bars.clear()
         self._current_pie_weights = plot_weights
         
-        # --- KOLÁČE (Oprava: Odstraněno dvojité násobení stem u formátu %) ---
-        labels_weights =[f"{t}\n{w:.1%}".replace('.', ',') if w >= 0.05 else "" for t, w in zip(self.ordered_tickers, plot_weights)]
+        # --- KOLÁČE (Zobrazení všech nenulových podílů) ---
+        # limit 0.001 (0.1 %) zajistí, že jsou vidět všechny reálné pozice,
+        # ale skryly se ty s nulovou váhou (např. čerstvě přidané akcie v base portfoliu).
+        LABELS_LIMIT_PERCENT = 0.001
+        labels_weights =[f"{t}\n{w:.1%}".replace('.', ',') if w > LABELS_LIMIT_PERCENT else "" for t, w in zip(self.ordered_tickers, plot_weights)]
         self.wedges_weights, _ = self.ax_pie.pie(plot_weights, labels=labels_weights, startangle=140, colors=plt.cm.tab20.colors)
         self.ax_pie.set_title(f"Rozložení vah {pie_title_suffix}")
         
         ticker_div_czk = plot_weights * self.tuner_stock_divs * 100000
-        div_tickers, div_sizes = [], []
+        div_tickers, div_sizes = [],[]
         sorted_indices = np.argsort(ticker_div_czk)[::-1]
         for i in sorted_indices:
             if ticker_div_czk[i] > 0:
@@ -2827,8 +2830,10 @@ class CzechInvestorApp:
         
         if div_sizes:
             total_div = sum(div_sizes)
-            f_labels =[l if (s/total_div) > 0.03 else "" for l, s in zip(div_tickers, div_sizes)]
-            self.wedges_divs, _, _ = self.ax_div_pie.pie(div_sizes, labels=f_labels, autopct=lambda p: f'{p:.1f}%'.replace('.', ',') if p > 3 else '', startangle=140, colors=plt.cm.tab20b.colors)
+            # Limit 3% skryje nevýznamné zdroje dividend
+            LABELS_LIMIT_DIV = 0.04
+            f_labels =[l if (s/total_div) > LABELS_LIMIT_DIV else "" for l, s in zip(div_tickers, div_sizes)]
+            self.wedges_divs, _, _ = self.ax_div_pie.pie(div_sizes, labels=f_labels, autopct=lambda p: f'{p:.1f}%'.replace('.', ',') if p > (100*LABELS_LIMIT_DIV) else '', startangle=140, colors=plt.cm.tab20b.colors)
             self.div_data_tickers = div_tickers; self.div_data_sizes = div_sizes
             self.ax_div_pie.set_title(f"Zdroje dividend {pie_title_suffix}")
             
@@ -4444,14 +4449,24 @@ class CzechInvestorApp:
 
         self.ethical_filters = {k: v.get() for k, v in f_vars.items()}
         
-        # Automatické vyvážení vah, pokud došlo ke změně počtu titulů
+        # Inteligentní úprava vah při změně počtu titulů
         cnt = len(TARGETS)
         if cnt > 0:
             current_sum = sum(TARGETS.values())
-            has_zero = any(w <= 0 for w in TARGETS.values())
-            if abs(current_sum - 1.0) > 0.01 or has_zero:
+            
+            if current_sum <= 0:
+                # Ochrana: Všechny váhy jsou nula (např. zcela prázdné portfolio)
                 new_w = 1.0 / cnt
                 for t in TARGETS: TARGETS[t] = new_w
+            elif abs(current_sum - 1.0) > 0.001:
+                # Pokud byla akcie odebrána, součet klesne pod 1.0.
+                # Abychom base portfolio nerozbili, pouze poměrově zvětšíme 
+                # zbývající akcie tak, aby opět tvořily 100 %, ale zachovaly si vzájemné poměry.
+                for t in TARGETS: TARGETS[t] = TARGETS[t] / current_sum
+                
+            # POZNÁMKA: Pokud byla akcie PŘIDÁNA, má zatím váhu 0.0 a current_sum je stále 1.0.
+            # V takovém případě kód neudělá NIC. Base portfolio zůstane nedotčené (staré) 
+            # a nová akcie čeká na 0 %, dokud jí Tuner nepřidělí novou váhu!
         
         self.stock_db_from_json = self.stock_db
         self.save_data()
