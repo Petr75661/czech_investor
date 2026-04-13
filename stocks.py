@@ -26,6 +26,8 @@ from reportlab.lib.units import cm
 import webbrowser
 import base64
 import urllib.parse
+import pdfplumber
+import io
 
 # ==============================================================================
 # 1. KONFIGURACE A DATABÁZE APLIKACE
@@ -56,12 +58,34 @@ TARGETS = {
     "AVGO":   0.09011472979451929,  # Broadcom
     "MRK":    0.08257822223712338,  # Merck - biotechnologie
 }
+# Výchozí cílové váhy (TARGETS)
+TARGETS = {
+    "LGEN.L": 0.06,     # Legal & General - High Yield
+    "ULVR.L": 0.042,    # Unilever - Defensive Staples
+    "TRIG.L": 0.09,     # Renewables Infrastructure - Income
+    "JNJ":    0.042,    # Johnson & Johnson - Core Healthcare
+    "NEE":    0.042,    # NextEra - Green Utility Growth
+    "PEP":    0.042,    # PepsiCo - Resilient Staples
+    "CAT":    0.055,    # Industrial/Cyclical Growth
+    "AAPL":   0.05,     # Technology/Quality Growth
+    "O":      0.042,    # Reality
+    "ABBV":   0.042,    # Farmaceutický gigant
+    "MAIN":   0.08,     # Business Development Company (úvěry firmám)
+    "HTGC":   0.035,    # BDC fond
+    "OHI":    0.078,    # Zdravotnický REIT (domovy s pečovatelskou službou)
+    "AVGO":   0.09,     # Broadcom
+    "MRK":    0.042,    # Merck - biotechnologie
+    "ARCC":   0.08,     # Business Development Company (úvěry firmám)
+    "LLY":    0.046,    # Eli Lilly and Company - human pharmaceutical products
+    "PWR":    0.042,    # Quanta - power utility
+}
 
 # Měny jednotlivých titulů pro správný výpočet FX (převodů měn)
 CURRENCIES = {
     "LGEN.L": "GBP", "ULVR.L": "GBP", "TRIG.L": "GBP", 
     "JNJ": "USD", "NEE": "USD", "PEP": "USD", "CAT": "USD", "AAPL": "USD",
-    "O": "USD", "ABBV": "USD", "MAIN": "USD", "ARCC": "USD", "OHI": "USD", "AVGO": "USD", "MRK": "USD",
+    "O": "USD", "ABBV": "USD", "MAIN": "USD", "HTGC": "USD", "ARCC": "USD", 
+    "OHI": "USD", "AVGO": "USD", "MRK": "USD", "LLY": "USD", "PWR": "USD",
 }
 
 # Pravidla pro hodnocení "zdraví" portfolia (použito v Editoru akcií)
@@ -101,6 +125,7 @@ DEFAULT_STOCK_DB = {
     "ABBV":   {"name": "AbbVie Inc.", "sector": "Healthcare", "tags":[], "yield": 3.6, "growth": 25.0},
     "PFE":    {"name": "Pfizer Inc.", "sector": "Healthcare", "tags":[], "yield": 6.0, "growth": -35.0},
     "MRK":    {"name": "Merck & Co.", "sector": "Healthcare", "tags":[], "yield": 2.5, "growth": 20.0},
+    "LLY":    {"name": "Eli Lilly and Co.", "sector": "Healthcare", "tags":[], "yield": 0.6, "growth": 85.0},
 
     # -- SPOTŘEBNÍ ZBOŽÍ (DEFENZIVA) --
     "PEP":    {"name": "PepsiCo, Inc.", "sector": "Consumer Defensive", "tags":[], "yield": 3.1, "growth": -2.0},
@@ -130,6 +155,7 @@ DEFAULT_STOCK_DB = {
     "MMM":    {"name": "3M Company", "sector": "Industrial", "tags":[], "yield": 6.5, "growth": -20.0},
     "TRIG.L": {"name": "Renewables Infra", "sector": "Utilities", "tags":[], "yield": 7.5, "growth": -25.0},
     "NEE":    {"name": "NextEra Energy", "sector": "Utilities", "tags":[], "yield": 3.5, "growth": -15.0},
+    "PWR":    {"name": "Quanta Services", "sector": "Industrial", "tags":[], "yield": 0.2, "growth": 45.0},
 
     # -- ENERGIE (FOSILNÍ) --
     "CVX":    {"name": "Chevron Corp.", "sector": "Energy", "tags": ["FOSSIL"], "yield": 4.1, "growth": -5.0},
@@ -373,68 +399,69 @@ class CzechInvestorApp:
         current_year = datetime.now().year
         last_year = str(current_year - 1)
         if last_year in self.uniform_rates: return
-        threading.Thread(target=self._scrape_worker, args=(last_year,), daemon=True).start()
+        threading.Thread(target=self._fetch_rates_from_gfr_pdf, args=(current_year,), daemon=True).start()
 
-    def _scrape_worker(self, year):
-        import re
-        url = f"https://www.kurzy.cz/kurzy-men/jednotny-kurz/{year}/"
+    def _fetch_rates_from_gfr_pdf(self, current_year):
+        # Převod na int, aby fungovala matematika (year - 1)
+        current_year_int = int(current_year)
+        # Hledáme kurzy za PŘEDCHOZÍ rok (GFŘ 2026 řeší rok 2025)
+        last_year = current_year_int - 1
+        source_year = last_year + 1 
         
-        # Klíčové hlavičky, aby nás web kurzy.cz nepovažoval za bot a neblokoval
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'cs,en-US;q=0.7,en;q=0.3',
-        }
-
+        base_url = f"https://financnisprava.gov.cz/cs/dane/legislativa-a-metodika/pokyny-d/cleneni-podle-dani/dane-z-prijmu/{source_year}"
+        
         try:
-            # Použijeme Session pro stabilnější připojení
-            session = requests.Session()
-            resp = session.get(url, headers=headers, timeout=10)
-            resp.encoding = 'utf-8'
-            
-            if resp.status_code != 200:
-                raise ConnectionError(f"Server vrátil chybu {resp.status_code}")
-
+            resp = requests.get(base_url, timeout=15)
+            resp.raise_for_status()
             soup = BeautifulSoup(resp.text, 'html.parser')
-            rates_found = {}
-            targets = {"USD": "USD", "GBP": "GBP"}
+            
+            pdf_url = None
+            # Procházíme teasery na webu
+            for teaser in soup.find_all(class_="b-teaser"):
+                text_content = teaser.find(class_="b-teaser__text").get_text()
+                # Hledáme cílový text (seznam jednotných kurzů)
+                if "jednotných kurzů" in text_content and str(last_year) in text_content:
+                    link = teaser.find('a', class_='btn--ghost')
+                    if link and link.get('href'):
+                        pdf_url = "https://financnisprava.gov.cz" + link.get('href')
+                        break
+            
+            if not pdf_url:
+                print(f"Nepodařilo se najít odkaz na PDF pro rok {last_year}")
+                return False
 
-            # Projdeme všechny tabulky na stránce
-            for table in soup.find_all('table'):
-                for row in table.find_all('tr'):
-                    cells = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
-                    if not cells: continue
-                    
-                    row_str = " ".join(cells).upper()
-                    
-                    for symbol, code in targets.items():
-                        # Pokud v řádku vidíme kód měny
-                        if code in row_str:
-                            # Projdeme buňky a hledáme kurz (číslo s 3 des. místy)
-                            for cell in cells:
-                                # Regex hledá formát: aspoň jedna cifra, čárka/tečka a přesně tři cifry
-                                match = re.search(r'(\d+[\,\.]\d{3})', cell)
-                                if match:
-                                    val = float(match.group(1).replace(',', '.'))
-                                    # Pojistka: jednotný kurz je vždy nad 10 Kč (vyloučí roky a jednotky)
-                                    if val > 10: 
-                                        rates_found[symbol] = val
-
-            # Pokud máme oba kurzy, zapíšeme je
-            if "USD" in rates_found and "GBP" in rates_found:
-                self.uniform_rates[str(year)] = rates_found
-                self.save_data()
-            else:
-                missing = [k for k in ["USD", "GBP"] if k not in rates_found]
-                raise ValueError(f"Chybějící data pro: {', '.join(missing)}")
-
+            pdf_response = requests.get(pdf_url, timeout=15)
+            with pdfplumber.open(io.BytesIO(pdf_response.content)) as pdf:
+                # GFŘ pokyny mají tabulku zpravidla na 2. straně
+                if len(pdf.pages) < 2: return False
+                page = pdf.pages[1] 
+                table = page.extract_table()
+                
+                if not table: return False
+                
+                usd_found, gbp_found = False, False
+                for row in table:
+                    # Řádek: [Země, Měna, Množství, Kód, Průměr]
+                    # row[3] je kód, row[4] je průměr
+                    if len(row) >= 5:
+                        code = row[3]
+                        val_raw = row[4]
+                        
+                        if code == "USD":
+                            self.uniform_rates.setdefault(str(last_year), {})["USD"] = float(val_raw.replace(',', '.'))
+                            usd_found = True
+                        elif code == "GBP":
+                            self.uniform_rates.setdefault(str(last_year), {})["GBP"] = float(val_raw.replace(',', '.'))
+                            gbp_found = True
+                
+                if usd_found and gbp_found:
+                    self.save_data()
+                    return True
+                
         except Exception as e:
-            # Upozornění uživatele (bezpečně přes hlavní vlákno)
-            err_msg = (
-                f"Chyba při stahování Jednotných kurzů pro rok {year}:\n{str(e)}\n\n"
-                "Aplikace použije odhadované tržní kurzy."
-            )
-            self.root.after(0, lambda: messagebox.showwarning("Upozornění scraperu", err_msg))
+            print(f"Chyba při extrakci z FS PDF: {e}")
+        return False
+
 
     def get_fx_rates(self):
         try:
@@ -533,6 +560,11 @@ class CzechInvestorApp:
                 
                 if data is None or data.empty or 'Close' not in data:
                     raise ValueError("Yahoo Finance nevrátil validní data.")
+
+                # yfinance v novějších verzích vrací MultiIndex. Pokud je 'Close' prázdné, 
+                # znamená to, že se stáhla jen HTML stránka s chybou.
+                if 'Close' not in data.columns and not any('Close' in col for col in data.columns):
+                    raise ValueError("Chybí sloupec Close (Yahoo Finance chyba).")
                 
                 close_data = data['Close'].replace(0.0, np.nan)
                 

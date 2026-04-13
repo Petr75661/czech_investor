@@ -17,7 +17,7 @@ Aplikace je navržena pro české investory, kteří vyžadují matematickou př
 ### Krok 2: Instalace doplňků (Knihoven)
 Aplikace využívá pokročilé knihovny pro data, grafiku a generování dokumentů. Otevřete terminál (CMD) a spusťte:
 ```bash
-pip install yfinance pandas matplotlib numpy beautifulsoup4 requests reportlab
+pip install yfinance pandas matplotlib numpy beautifulsoup4 requests reportlab pdfplumber
 ```
 
 ---
@@ -58,16 +58,18 @@ Výchozí nastavení databáze je koncipováno jako **"all-weather dividend grow
 
 | Segment | Vlastnosti | Zastoupené tituly |
 | :--- | :--- | :--- |
-| **Technologický růst** | Nízká dividenda, exponenciální růst kapitálu. | `AAPL`, `AVGO`, `CAT` |
-| **Defenzivní stabilita** | Odolnost v recesi, dlouhodobě rostoucí výplaty. | `JNJ`, `ABBV`, `PEP`, `ULVR.L`, `NEE`, `MRK` |
-| **Vysoký cash-flow** | BDC a REIT tituly s masivním výnosem (6–10 %). | `MAIN`, `ARCC`, `OHI`, `O` |
-| **Zahraniční diverzifikace** | Expozice vůči britské libře (GBP). | `LGEN.L`, `TRIG.L` |
+| **Technologický růst** | Kombinace inovací a navyšování dividend. | `AAPL`, `AVGO` |
+| **Defenzivní stabilita** | Odolnost v recesi, dlouhodobě rostoucí výplaty. | `JNJ`, `ABBV`, `PEP`, `ULVR.L`, `MRK`, `LLY` |
+| **Vysoký cash-flow** | BDC a REIT tituly s masivním výnosem (6–10 %). | `MAIN`, `ARCC`, `HTGC`, `OHI`, `O` |
+| **Infrastruktura a průmysl** | Cyklická síla a regulované utility s fixním výnosem. | `CAT`, `TRIG.L`, `NEE`, `PWR` |
+| **Zahraniční diverzifikace** | Expozice vůči britské libře (GBP) a britskému trhu. | `LGEN.L` |
 
 > [!WARNING]
 > **INVESTIČNÍ RIZIKA:**
-> * **Koncentrace v BDC:** Tituly jako ARCC a MAIN tvoří značnou část příjmů. Jsou citlivé na úrokové sazby a stav ekonomiky USA.
-> * **Měnové riziko:** Investujete v cizích měnách. Posílení CZK vůči USD/GBP technicky snižuje hodnotu vašeho portfolia v korunách.
-> * **Závislost na datech:** Aplikace využívá neoficiální API Yahoo Finance. Aplikace má sice robustní *spot-check*, ale dlouhodobý výpadek serverů může dočasně omezit funkce analýzy.
+> * **Koncentrace v BDC:** Tituly jako ARCC, MAIN a HTGC jsou citlivé na úrokové sazby a stav ekonomiky USA, což může způsobit vyšší volatilitu NAV (čisté hodnoty aktiv).
+> * **Měnové riziko:** Investujete v cizích měnách. Posílení CZK vůči USD/GBP technicky snižuje hodnotu vašeho portfolia v korunách, i když akcie samotné rostou.
+> * **Závislost na datech:** Aplikace využívá API Yahoo Finance. I když implementuje *integritní spot-check* a vlastní cachování dividend, dlouhodobý výpadek externích zdrojů může omezit analytické funkce.
+> * **Sektorová rizika:** Portfolio obsahuje specifické sektory (REITs, BDC), které podléhají jiným daňovým a regulačním pravidlům než běžné korporátní akcie.
 
 ---
 
