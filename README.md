@@ -17,8 +17,11 @@ Aplikace je navržena pro české investory, kteří vyžadují matematickou př
 ### Krok 2: Instalace doplňků (Knihoven)
 Aplikace využívá pokročilé knihovny pro data, grafiku a generování dokumentů. Otevřete terminál (CMD) a spusťte:
 ```bash
-pip install yfinance pandas matplotlib numpy beautifulsoup4 requests reportlab pdfplumber
+pip install yfinance yahooquery pandas matplotlib numpy beautifulsoup4 requests reportlab pdfplumber
 ```
+
+> [!NOTE]
+> Architektura stahování dat: Aplikace nevyžaduje žádné API klíče. Spoléhá na knihovnu yfinance a yahooquery. Pokud jeden ze zdrojů Yahoo selže (např. kvůli omezení zátěže), aplikace přepne na druhý.
 
 ---
 
@@ -32,7 +35,8 @@ Definujte svůj "investiční vesmír" bez omezení.
 
 ### 📊 Pokročilý Tuning Portfolia
 Zcela unikátní dvouproudá optimalizace (Minulost vs. Budoucnost).
-* **Trychtýř nejistoty:** Aplikace nestuduje jen minulost, ale pomocí modelování *geometric brownian motion* a výhledů analytiků kreslí pravděpodobný budoucí scénář.
+* **Interaktivní fixace vah:** Dvojklikem na výseč v levém koláčovém grafu můžete zvolené akcii vnutit přesnou cílovou váhu. Monte Carlo algoritmus následně optimalizuje zbytek portfolia kolem tohoto pevného bodu.
+* **Trychtýř nejistoty:** Modelování pravděpodobných budoucích scénářů na základě volatility a cílů analytiků.
 * **Ochrana před value traps:** Vestavěný "účetní rozum" filtruje nesmyslné hodnoty payout ratií a snižuje rating firmám, které si na dividendu půjčují.
 * **Daňová brzda:** Grafy automaticky vizualizují ztrátu na složeném úročení způsobenou srážkovou 15% daní z dividend pro férové srovnání s ETF.
 
@@ -68,7 +72,7 @@ Výchozí nastavení databáze je koncipováno jako **"all-weather dividend grow
 > **INVESTIČNÍ RIZIKA:**
 > * **Koncentrace v BDC:** Tituly jako ARCC, MAIN a HTGC jsou citlivé na úrokové sazby a stav ekonomiky USA, což může způsobit vyšší volatilitu NAV (čisté hodnoty aktiv).
 > * **Měnové riziko:** Investujete v cizích měnách. Posílení CZK vůči USD/GBP technicky snižuje hodnotu vašeho portfolia v korunách, i když akcie samotné rostou.
-> * **Závislost na datech:** Aplikace využívá API Yahoo Finance. I když implementuje *integritní spot-check* a vlastní cachování dividend, dlouhodobý výpadek externích zdrojů může omezit analytické funkce.
+> * **Závislost na datech:** Aplikace využívá dvě různá API (yfinance a yahooquery), čímž je chráněna proti dočasným výpadkům a rate-limitům. I tak ale může případný globální a dlouhodobý výpadek serverů omezit některé analytické funkce.
 > * **Sektorová rizika:** Portfolio obsahuje specifické sektory (REITs, BDC, utilities), které podléhají jiným daňovým a regulačním pravidlům než běžné korporátní akcie.
 
 ---
