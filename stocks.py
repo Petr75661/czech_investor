@@ -1731,8 +1731,8 @@ class CzechInvestorApp:
         staging_scroll = ttk.Scrollbar(tree_container, orient="vertical")
         staging_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self.sell_staging_tree = ttk.Treeview(tree_container, columns=("Ticker", "Množství", "Cena [USD/GBP]", "Odhad [CZK]", "Akce"), show="headings", height=8, yscrollcommand=staging_scroll.set)
-        for c, w in {"Ticker": 100, "Množství": 150, "Cena [USD/GBP]": 150, "Odhad [CZK]": 150, "Akce": 100}.items():
+        self.sell_staging_tree = ttk.Treeview(tree_container, columns=("Ticker", "Množství", "Cena [USD/GBP]", "Odhad [CZK]", "Smazat"), show="headings", height=8, yscrollcommand=staging_scroll.set)
+        for c, w in {"Ticker": 100, "Množství": 150, "Cena [USD/GBP]": 150, "Odhad [CZK]": 150, "Smazat": 100}.items():
             self.sell_staging_tree.heading(c, text=c)
             self.sell_staging_tree.column(c, width=w, anchor="center")
 
