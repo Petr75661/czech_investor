@@ -615,6 +615,17 @@ class CzechInvestorApp:
         return False
 
     def get_fx_rates(self):
+        import time
+        # Vytvoření mezipaměti při prvním spuštění
+        if not hasattr(self, '_fx_cache_time'): 
+            self._fx_cache_time = 0
+            self._fx_cache_data = {"USD": 23.5, "GBP": 29.5}
+            
+        # Cache je platná 1 hodinu (3600 vteřin)
+        # Zabrání to zasekávání UI, když uživatel rychle "odentrovává" řádky
+        if time.time() - self._fx_cache_time < 3600:
+            return self._fx_cache_data
+            
         try:
             df = self._safe_yf_download("USDCZK=X GBPCZK=X", period="5d")
             if not df.empty:
@@ -627,18 +638,27 @@ class CzechInvestorApp:
                 
                 usd = float(vals.get('USDCZK=X', 23.5)) if 'USDCZK=X' in vals else 23.5
                 gbp = float(vals.get('GBPCZK=X', 29.5)) if 'GBPCZK=X' in vals else 29.5
-                return {"USD": usd, "GBP": gbp}
-        except Exception as e: print(f"FX Warning: {e}")
-        return {"USD": 23.5, "GBP": 29.5}
+                
+                # Uložení do mezipaměti
+                self._fx_cache_data = {"USD": usd, "GBP": gbp}
+                self._fx_cache_time = time.time()
+                
+                return self._fx_cache_data
+        except Exception as e: 
+            print(f"FX Warning: {e}")
+            
+        return self._fx_cache_data
 
     def fetch_sell_price(self):
         """Spustí stahování aktuální ceny ve vedlejším vlákně, aby UI nezamrzlo."""
         ticker = self.sell_ticker.get().strip().upper()
         if not ticker: return
         
-        # Vizuální indikace v Dashboardu (pokud je label dostupný)
-        if hasattr(self, 'status_lbl'):
-            self.status_lbl.config(text=f"Stahuji cenu pro {ticker}...", fg="blue")
+        # Nastavení zpožděného loading overlaye (animace vyjede až pokud stahování trvá > 500 ms)
+        if getattr(self, 'sell_price_loading_timer', None):
+            self.root.after_cancel(self.sell_price_loading_timer)
+            
+        self.sell_price_loading_timer = self.root.after(500, lambda: self.show_loading(self.sell_loading_state, f"Stahuji cenu pro {ticker}..."))
         
         def work():
             try:
@@ -646,18 +666,15 @@ class CzechInvestorApp:
                 df = self._safe_yf_download(ticker, period="5d")
                 
                 if df.empty or 'Close' not in df:
-                    raise ValueError(f"Yahoo Finance neposkytl cenu pro {ticker}.")
+                    raise ValueError(f"Servery neposkytly cenu pro {ticker}.")
                 
                 # Získání Close dat
                 close_col = df['Close']
                 
                 # yfinance může vrátit DataFrame (u více tickerů) nebo Series (u jednoho).
-                # Musíme zkontrolovat, co jsme dostali:
                 if isinstance(close_col, pd.DataFrame):
-                    # Pokud je to DataFrame, vybereme sloupec s tickerem
                     p_val = close_col[ticker].ffill().iloc[-1]
                 else:
-                    # Pokud je to Series, vezmeme poslední hodnotu přímo
                     p_val = close_col.ffill().iloc[-1]
 
                 # Ošetření nečíselných hodnot (NaN)
@@ -676,15 +693,26 @@ class CzechInvestorApp:
                 print(f"Error fetching price: {err_msg}")
                 self.root.after(0, lambda m=err_msg: messagebox.showerror("Chyba stahování", m))
             finally:
-                if hasattr(self, 'status_lbl'):
-                    self.root.after(0, lambda: self.status_lbl.config(text="Hotovo", fg="green"))
+                # Garantované zrušení časovače a skrytí animace (provedeno v hlavním vlákně)
+                self.root.after(0, self._cleanup_sell_price_loading)
 
+        import threading
         threading.Thread(target=work, daemon=True).start()
+
+    def _cleanup_sell_price_loading(self):
+        """Bezpečně zruší časovač a skryje animaci po dokončení stahování jedné ceny."""
+        if getattr(self, 'sell_price_loading_timer', None):
+            self.root.after_cancel(self.sell_price_loading_timer)
+            self.sell_price_loading_timer = None
+        self.hide_loading(self.sell_loading_state)
 
     def _update_sell_price_ui(self, price):
         """Pomocná metoda pro bezpečný zápis ceny do políčka (voláno z after)."""
         self.sell_price_entry.delete(0, tk.END)
-        self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
+        # alternativní zobrazení ceny s desetinnou čárkou
+        #self.sell_price_entry.insert(0, f"{float(price):.2f}".replace('.', ','))
+        # alternativní zobrazení ceny s desetinnou tečkou
+        self.sell_price_entry.insert(0, f"{float(price):.2f}")
 
     def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=2, auto_adjust=True, start=None, end=None):
         """Volá robustní stahovač se záložním zdrojem a ochranou relace."""
@@ -982,7 +1010,7 @@ class CzechInvestorApp:
         # --- 4. OBSAH RÁMEČKU 3 (Staging / Připraveno k zápisu) ---
         btn_bar = tk.Frame(final_frame, bg="#f0f2f5")
         btn_bar.pack(side=tk.BOTTOM, pady=10)
-        tk.Button(btn_bar, text="💾 ULOŽIT VŠE DO PORTFOLIA", command=self.commit_staging_to_ledger, 
+        tk.Button(btn_bar, text="💾 Uložit všechny nákupy ze seznamu do portfolia", command=self.commit_staging_to_ledger, 
                   font=("Arial", 14, "bold"), bg="#C62828", fg="white", padx=20).pack()
 
         staging_container = tk.Frame(final_frame, bg="#f0f2f5")
@@ -1149,8 +1177,10 @@ class CzechInvestorApp:
         self.real_qty.delete(0, tk.END)
         self.real_qty.insert(0, clean_qty) 
         
-        # Převod čárky na tečku i u ceny, ať je to pro kopírování do brokera konzistentní
+        # alternativní možnost: Převod čárky na tečku i u ceny, ať je to pro kopírování do brokera konzistentní
         clean_price = str(vals[2]).replace(',', '.').strip()
+        # alternativní možnost: cena je s tečkou
+        #clean_price = str(vals[2]).strip()
         self.real_price.delete(0, tk.END)
         self.real_price.insert(0, clean_price)
 
@@ -1644,35 +1674,91 @@ class CzechInvestorApp:
     def setup_sell_tab(self):
         frame = tk.Frame(self.notebook, bg="#fff")
         self.notebook.add(frame, text="Prodej & Ledger")
-        ctrl_frame = tk.LabelFrame(frame, text="Realizace prodeje", padx=10, pady=10, font=("Arial", 12, "bold"))
-        ctrl_frame.pack(pady=10, padx=20, fill="x")
-        
-        ctrl_frame.columnconfigure(8, weight=1)
-        
-        self.sell_ticker = ttk.Combobox(ctrl_frame, values=list(TARGETS.keys()), width=12, font=("Arial", 12))
+
+        # --- HORNÍ PANEL: Kalkulátor a Ruční editace ---
+        top_panel = tk.Frame(frame, bg="#fff")
+        top_panel.pack(fill=tk.X, padx=10, pady=5)
+
+        # 1. Kalkulátor výběru hotovosti
+        calc_frame = tk.LabelFrame(top_panel, text="1. Návrh prodeje pro výběr hotovosti", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#E8F5E9")
+        calc_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        tk.Label(calc_frame, text="Částka k výběru (Kč):", font=("Arial", 12), bg="#E8F5E9").grid(row=0, column=0, padx=5)
+        self.withdraw_entry = tk.Entry(calc_frame, width=12, font=("Arial", 12))
+        self.withdraw_entry.grid(row=0, column=1, padx=5)
+        self.withdraw_entry.insert(0, "50000")
+
+        self.btn_calc_sale = tk.Button(calc_frame, text="Spočítat návrh", command=self.start_calculate_withdrawal, bg="#2E7D32", fg="white", font=("Arial", 12, "bold"))
+        self.btn_calc_sale.grid(row=0, column=2, padx=10)
+
+        # 2. Ruční zadání / Úprava ceny
+        manual_frame = tk.LabelFrame(top_panel, text="2. Ruční zadání / Úprava ceny", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#E3F2FD")
+        manual_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        tk.Label(manual_frame, text="Ticker:", font=("Arial", 12), bg="#E3F2FD").grid(row=0, column=0)
+        self.sell_ticker = ttk.Combobox(manual_frame, values=list(TARGETS.keys()), width=8, font=("Arial", 12))
         self.sell_ticker.grid(row=0, column=1, padx=5)
-        tk.Label(ctrl_frame, text="Ticker:", font=("Arial", 12)).grid(row=0, column=0)
-        
-        self.sell_qty = tk.Entry(ctrl_frame, width=10, font=("Arial", 12))
+
+        tk.Label(manual_frame, text="Kusy:", font=("Arial", 12), bg="#E3F2FD").grid(row=0, column=2)
+        self.sell_qty = tk.Entry(manual_frame, width=8, font=("Arial", 12))
         self.sell_qty.grid(row=0, column=3, padx=5)
-        tk.Label(ctrl_frame, text="Kusy:", font=("Arial", 12)).grid(row=0, column=2)
-        
-        self.sell_price_entry = tk.Entry(ctrl_frame, width=10, font=("Arial", 12))
+
+        tk.Label(manual_frame, text="Cena:", font=("Arial", 12), bg="#E3F2FD").grid(row=0, column=4)
+        self.sell_price_entry = tk.Entry(manual_frame, width=8, font=("Arial", 12))
         self.sell_price_entry.grid(row=0, column=5, padx=5)
-        tk.Label(ctrl_frame, text="Prodejní cena [USD/GBP]:", font=("Arial", 12)).grid(row=0, column=4)
         
-        tk.Button(ctrl_frame, text="Stáhnout", command=self.fetch_sell_price, font=("Arial", 12)).grid(row=0, column=6)
-        tk.Button(ctrl_frame, text="PRODAT (FIFO)", command=self.execute_sale, bg="#C62828", fg="white", font=("Arial", 12, "bold")).grid(row=0, column=7, padx=20)
-        tk.Button(ctrl_frame, text="↻ Aktualizovat seznam", command=self.update_lots_view, font=("Arial", 12)).grid(row=0, column=8, sticky="e", padx=10)
-        
-        tree_container = tk.Frame(frame)
-        tree_container.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-        
-        tree_scroll = ttk.Scrollbar(tree_container)
+        # Bind pro odklepnutí klávesou Enter přímo v políčku ceny
+        self.sell_price_entry.bind("<Return>", self._on_sell_price_enter)
+
+        tk.Button(manual_frame, text="Stáhnout", command=self.fetch_sell_price, font=("Arial", 12)).grid(row=0, column=6, padx=5)
+        tk.Button(manual_frame, text="↓ Přidat / Upravit", command=self.add_to_sell_staging, bg="#1565C0", fg="white", font=("Arial", 12, "bold")).grid(row=0, column=7, padx=5)
+        tk.Label(manual_frame, text="(Klikni na řádek v seznamu níže pro rychlou úpravu)", bg="#E3F2FD", fg="grey", font=("Arial", 10)).grid(row=1, column=0, columnspan=8, pady=(5,0))
+
+        # --- STŘEDNÍ PANEL: Tabulka k prodeji (Staging) ---
+        # expand=True pro tuto tabulku, takže zabere dostupné místo
+        staging_frame = tk.LabelFrame(frame, text="3. Seznam připravených prodejů", padx=10, pady=5, font=("Arial", 12, "bold"), bg="#fff")
+        staging_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Červené tlačítko zabalíme úplně dolů
+        btn_bar = tk.Frame(staging_frame, bg="#fff")
+        btn_bar.pack(side=tk.BOTTOM, pady=10)
+        tk.Button(btn_bar, text="💾 Uložit všechny prodeje ze seznamu do portfolia (FIFO)", command=self.execute_sale, font=("Arial", 14, "bold"), bg="#C62828", fg="white", padx=20).pack()
+
+        # Kontejner pro strom a posuvník (Odděluje posuvník od červeného tlačítka)
+        tree_container = tk.Frame(staging_frame, bg="#fff")
+        tree_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        staging_scroll = ttk.Scrollbar(tree_container, orient="vertical")
+        staging_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.sell_staging_tree = ttk.Treeview(tree_container, columns=("Ticker", "Množství", "Cena [USD/GBP]", "Odhad [CZK]", "Akce"), show="headings", height=8, yscrollcommand=staging_scroll.set)
+        for c, w in {"Ticker": 100, "Množství": 150, "Cena [USD/GBP]": 150, "Odhad [CZK]": 150, "Akce": 100}.items():
+            self.sell_staging_tree.heading(c, text=c)
+            self.sell_staging_tree.column(c, width=w, anchor="center")
+
+        self.sell_staging_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        staging_scroll.config(command=self.sell_staging_tree.yview)
+
+        # Propojení tabulky s akcemi
+        self.sell_staging_tree.bind("<<TreeviewSelect>>", self.fill_entry_from_sell_staging)
+        self.sell_staging_tree.bind("<Double-1>", self.delete_sell_staging_row)
+        # Mazání klávesou Delete
+        self.sell_staging_tree.bind("<Delete>", self.delete_sell_staging_row)
+
+        # --- SPODNÍ PANEL: Ledger (Aktuální stav) ---
+        # expand=False (neporoste při maximalizaci okna)
+        ledger_frame = tk.LabelFrame(frame, text="4. Aktuální stav portfolia (Ledger)", padx=10, pady=5, font=("Arial", 12, "bold"), bg="#fff")
+        ledger_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
+
+        top_ledger_bar = tk.Frame(ledger_frame, bg="#fff")
+        top_ledger_bar.pack(fill=tk.X)
+        tk.Button(top_ledger_bar, text="↻ Aktualizovat seznam", command=self.update_lots_view, font=("Arial", 12)).pack(side=tk.RIGHT, pady=5)
+
+        tree_scroll = ttk.Scrollbar(ledger_frame)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.lots_tree = ttk.Treeview(tree_container, columns=("Ticker", "Datum", "Množství", "Nákupní cena [GBP/USD]", "Daň"), show="headings", yscrollcommand=tree_scroll.set)
-        for c in ("Ticker", "Datum", "Množství", "Nákupní cena [GBP/USD]", "Daň"):
+
+        self.lots_tree = ttk.Treeview(ledger_frame, columns=("Ticker", "Datum", "Množství", "Nákupní cena[GBP/USD]", "Daň"), show="headings", height=6, yscrollcommand=tree_scroll.set)
+        for c in ("Ticker", "Datum", "Množství", "Nákupní cena[GBP/USD]", "Daň"):
             self.lots_tree.heading(c, text=c)
             self.lots_tree.column(c, anchor="center")
 
@@ -1680,6 +1766,8 @@ class CzechInvestorApp:
         tree_scroll.config(command=self.lots_tree.yview)
 
         self.update_lots_view()
+        
+        self.sell_loading_state = self._create_loading_card(frame)
 
     def update_lots_view(self):
         self.lots_tree.delete(*self.lots_tree.get_children())
@@ -1703,41 +1791,309 @@ class CzechInvestorApp:
                     self.lots_tree.insert("", "end", values=(t, lot['date'], qty_str, price_str, s))
                 except: pass
 
-    def execute_sale(self):
-        t = self.sell_ticker.get()
-        try: 
-            qty = float(self.sell_qty.get().replace(',', '.'))
-            price = float(self.sell_price_entry.get().replace(',', '.'))
-        except: return
+    # ---------------------------------------------------------
+    # NOVÉ FUNKCE PRO VÝPOČET A REALIZACI PRODEJŮ
+    # ---------------------------------------------------------
+    
+    def start_calculate_withdrawal(self):
+        self.btn_calc_sale.config(state=tk.DISABLED)
+        for i in self.sell_staging_tree.get_children(): self.sell_staging_tree.delete(i)
         
-        if t not in self.ledger or not self.ledger[t]: 
-            messagebox.showwarning("Prodej", f"Zatím nemáte evidované žádné kusy akcie {t} k prodeji.")
-            return
-        
-        rem = qty; today = datetime.now().strftime("%Y-%m-%d")
-        
-        while rem > 0 and self.ledger[t]:
-            lot = self.ledger[t][0]
-            sold = min(lot['qty'], rem)
-            rem -= sold
-            lot['qty'] -= sold
-            
-            if lot['qty'] < 0.0001: self.ledger[t].pop(0)
-            
-            self.sales_history.append({
-                "ticker": t, 
-                "currency": self.get_currency_for_ticker(t),
-                "buy_date": lot['date'], 
-                "sell_date": today,
-                "qty": sold, 
-                "buy_price": float(lot.get('price_at_buy', 0)), 
-                "sell_price": price
-            })
-            
-        self.save_data()
-        self.update_lots_view()
-        messagebox.showinfo("Info", "Prodáno.")
+        self.sell_loading_timer = self.root.after(1000, lambda: self.show_loading(self.sell_loading_state, "Počítám optimální prodej..."))
+        import threading
+        threading.Thread(target=self.calculate_withdrawal, daemon=True).start()
 
+    def calculate_withdrawal(self):
+        try:
+            try:
+                target_cash = float(self.withdraw_entry.get().replace(',', '.'))
+            except ValueError:
+                self.root.after(0, lambda: messagebox.showerror("Chyba", "Zadejte platnou částku k výběru."))
+                return
+
+            fx = self.get_fx_rates()
+            all_tickers = list(TARGETS.keys())
+
+            try:
+                if not hasattr(self, 'data_fetcher'):
+                    from yahooquery import Ticker as YQTicker # Fallback pokud by chyběl import
+                    self.data_fetcher = RobustDataFetcher()
+                raw_data = self.data_fetcher.fetch_history(all_tickers, period="5d")
+                if raw_data.empty or 'Close' not in raw_data:
+                    raise ValueError("Nelze získat aktuální ceny akcií pro výpočet.")
+
+                close_data = raw_data['Close']
+                if isinstance(close_data, pd.DataFrame):
+                    prices_data = close_data.ffill().iloc[-1]
+                else:
+                    prices_data = pd.Series({all_tickers[0]: close_data.ffill().iloc[-1]})
+            except Exception as e:
+                self.root.after(0, lambda err=e: messagebox.showerror("Chyba", f"Chyba stahování dat: {err}"))
+                return
+
+            current_holdings_val = {}
+            total_current_portfolio_val = 0.0
+
+            for t in all_tickers:
+                qty_held = sum(item['qty'] for item in self.ledger.get(t,[]))
+                try:
+                    price = float(prices_data[t])
+                    cur = self.get_currency_for_ticker(t)
+                    fx_rate = fx.get(cur, 23.0)
+                    if t.endswith(".L"): price /= 100.0
+                    val_czk = qty_held * price * fx_rate
+                    current_holdings_val[t] = val_czk
+                    total_current_portfolio_val += val_czk
+                except Exception:
+                    current_holdings_val[t] = 0
+
+            if target_cash > total_current_portfolio_val:
+                self.root.after(0, lambda: messagebox.showerror("Chyba", "Požadovaná částka přesahuje aktuální hodnotu celého portfolia!"))
+                return
+
+            valid_targets =[w for w in TARGETS.values() if w > 0]
+            min_target = min(valid_targets) if valid_targets else 1.0
+
+            low = 0.0
+            high = total_current_portfolio_val / min_target if min_target > 0 else total_current_portfolio_val * 2
+            virtual_total = 0.0
+
+            for _ in range(50):
+                mid = (low + high) / 2.0
+                cash_raised = 0.0
+                for t, target in TARGETS.items():
+                    ideal_val = mid * target
+                    curr_val = current_holdings_val.get(t, 0.0)
+                    if curr_val > ideal_val:
+                        cash_raised += (curr_val - ideal_val)
+
+                if cash_raised > target_cash:
+                    low = mid
+                else:
+                    high = mid
+                    virtual_total = mid
+
+            rows_to_insert =[]
+            for t, target in TARGETS.items():
+                ideal_val = virtual_total * target
+                curr_val = current_holdings_val.get(t, 0.0)
+
+                if curr_val > ideal_val:
+                    sell_czk = curr_val - ideal_val
+                    try:
+                        price = float(prices_data[t])
+                        cur = self.get_currency_for_ticker(t)
+                        fx_rate = fx.get(cur, 23.0)
+                        
+                        price_factor = 100.0 if t.endswith(".L") else 1.0
+                        calc_price = price / price_factor # CENA V GBP/USD
+
+                        sell_qty = sell_czk / (calc_price * fx_rate) if calc_price > 0 else 0.0
+
+                        held_qty = sum(item['qty'] for item in self.ledger.get(t,[]))
+                        if sell_qty > held_qty:
+                            sell_qty = held_qty
+                            sell_czk = sell_qty * calc_price * fx_rate
+
+                        if sell_qty > 0.001:
+                            rows_to_insert.append((
+                                t,
+                                f"{sell_qty:.3f}".replace('.', ','), 
+                                f"{calc_price:.2f}".replace('.', ','),
+                                f"{sell_czk:.0f}",
+                                "❌"
+                            ))
+                    except Exception as e:
+                        print(f"Přeskakuji odprodej u {t}: {e}")
+
+            self.root.after(0, lambda: self._populate_sell_staging(rows_to_insert))
+
+        finally:
+            self.root.after(0, self._cleanup_sell_loading)
+
+    def _cleanup_sell_loading(self):
+        if getattr(self, 'sell_loading_timer', None):
+            self.root.after_cancel(self.sell_loading_timer)
+            self.sell_loading_timer = None
+        self.hide_loading(self.sell_loading_state)
+        self.btn_calc_sale.config(state=tk.NORMAL)
+
+    def _populate_sell_staging(self, rows):
+        for row in rows:
+            self.sell_staging_tree.insert("", "end", values=row)
+
+    def _on_sell_price_enter(self, event):
+        """Uloží upravenou cenu a automaticky načte další řádek ze seznamu."""
+        ticker_to_find = self.sell_ticker.get().strip().upper()
+        
+        self.add_to_sell_staging()
+        
+        children = self.sell_staging_tree.get_children()
+        current_idx = -1
+        
+        for i, child in enumerate(children):
+            vals = self.sell_staging_tree.item(child)['values']
+            if str(vals[0]) == ticker_to_find:
+                current_idx = i
+                break
+                
+        if current_idx != -1 and current_idx + 1 < len(children):
+            next_child = children[current_idx + 1]
+            
+            self.sell_staging_tree.selection_set(next_child)
+            self.sell_staging_tree.focus(next_child)
+            
+            vals = self.sell_staging_tree.item(next_child)['values']
+            self.sell_ticker.set(vals[0])
+            
+            # Formátování při přeskoku: Kusy s tečkou, Cena s čárkou
+            clean_qty = str(vals[1]).replace(',', '.').strip()
+            self.sell_qty.delete(0, tk.END)
+            self.sell_qty.insert(0, clean_qty)
+
+            # alternativní zobrazení pole Cena - pro UI vždy s čárkou
+            #clean_price = str(vals[2]).replace('.', ',').strip()
+            # alternativní zobrazení pole Cena - pro UI vždy s tečkou
+            clean_price = str(vals[2]).replace(',', '.').strip()
+            self.sell_price_entry.delete(0, tk.END)
+            self.sell_price_entry.insert(0, clean_price)
+            
+        self.sell_price_entry.focus_set()
+        self.sell_price_entry.select_range(0, tk.END)
+        self.sell_price_entry.icursor(tk.END)
+
+    def fill_entry_from_sell_staging(self, event):
+        selection = self.sell_staging_tree.selection()
+        if not selection: return
+        vals = self.sell_staging_tree.item(selection[0])['values']
+        self.sell_ticker.set(vals[0])
+
+        # Kusy - vždy s tečkou
+        clean_qty = str(vals[1]).replace(',', '.').strip()
+        self.sell_qty.delete(0, tk.END)
+        self.sell_qty.insert(0, clean_qty)
+
+        # alternativní zobrazení pole Cena - pro UI vždy s čárkou
+        #clean_price = str(vals[2]).replace('.', ',').strip()
+        # alternativní zobrazení pole Cena - pro UI vždy s tečkou
+        clean_price = str(vals[2]).replace(',', '.').strip()
+        self.sell_price_entry.delete(0, tk.END)
+        self.sell_price_entry.insert(0, clean_price)
+
+    def add_to_sell_staging(self):
+        t = self.sell_ticker.get().strip().upper()
+        q = self.sell_qty.get().strip()
+        p = self.sell_price_entry.get().strip()
+
+        if not t or not q or not p:
+            messagebox.showwarning("Chyba", "Vyplňte Ticker, Množství a Cenu.")
+            return
+
+        try:
+            qty = float(q.replace(",", "."))
+            price = float(p.replace(",", "."))
+        except ValueError:
+            messagebox.showerror("Chyba", "Neplatný formát čísel.")
+            return
+
+        fx = self.get_fx_rates()
+        cur = self.get_currency_for_ticker(t)
+        fx_rate = fx.get(cur, 23.0) # 23.0 je pouze fallback pro případ absolutního výpadku sítě
+        
+        val_czk = qty * price * fx_rate
+
+        found = False
+        for item in self.sell_staging_tree.get_children():
+            if str(self.sell_staging_tree.item(item)['values'][0]) == t:
+                # Uložení zpět: Kusy s tečkou, Cena s čárkou
+                self.sell_staging_tree.item(item, values=(
+                    t,
+                    f"{qty:.3f}".replace('.', ','), 
+                    f"{price:.2f}".replace('.', ','),
+                    f"{val_czk:.0f}",
+                    "❌"
+                ))
+                found = True
+                break
+
+        if not found:
+            self.sell_staging_tree.insert("", "end", values=(
+                t, f"{qty:.3f}".replace('.', ','), f"{price:.2f}".replace('.', ','), f"{val_czk:.0f}", "❌"
+            ))
+
+        self.sell_qty.delete(0, tk.END)
+        self.sell_price_entry.delete(0, tk.END)
+
+    def delete_sell_staging_row(self, event):
+        item = self.sell_staging_tree.selection()
+        if item: self.sell_staging_tree.delete(item)
+
+    def execute_sale(self):
+        rows = self.sell_staging_tree.get_children()
+        if not rows:
+            messagebox.showwarning("Prodej", "Seznam k prodeji je prázdný.")
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        sales_executed = 0
+        failed_sales =[]
+
+        for item in rows:
+            vals = self.sell_staging_tree.item(item)['values']
+            t = str(vals[0])
+            try:
+                qty = float(str(vals[1]).replace(',', '.'))
+                price = float(str(vals[2]).replace(',', '.'))
+            except:
+                continue
+
+            if t not in self.ledger or not self.ledger[t]:
+                failed_sales.append(f"{t} (Žádné nákupy evidovány)")
+                continue
+
+            current_held_qty = sum(float(l['qty']) for l in self.ledger[t])
+            if current_held_qty < qty - 0.0001:
+                failed_sales.append(f"{t} (Nedostatek kusů: evidujete {current_held_qty:.3f}, chcete prodat {qty:.3f})")
+                continue
+
+            # Spuštění FIFO odprodeje
+            rem = qty
+            self.ledger[t].sort(key=lambda x: x.get("date", "1970-01-01"))
+
+            while rem > 0.0001 and self.ledger[t]:
+                lot = self.ledger[t][0]
+                sold = min(float(lot['qty']), rem)
+                rem -= sold
+                lot['qty'] = float(lot['qty']) - sold
+
+                if lot['qty'] < 0.0001:
+                    self.ledger[t].pop(0)
+
+                self.sales_history.append({
+                    "ticker": t,
+                    "currency": self.get_currency_for_ticker(t),
+                    "buy_date": lot['date'],
+                    "sell_date": today,
+                    "qty": sold,
+                    "buy_price": float(lot.get('price_at_buy', 0)),
+                    "sell_price": price
+                })
+
+            sales_executed += 1
+            self.sell_staging_tree.delete(item) # Úspěšně prodáno, odstraníme ze seznamu
+
+        if sales_executed > 0:
+            self.save_data()
+            self.update_lots_view()
+            # Spustí asynchronní přepočet na záložce Kalendář dividend
+            import threading
+            threading.Thread(target=self.refresh_dividends, daemon=True).start()
+
+        if failed_sales:
+            msg = "Některé prodeje selhaly (nedostatek evidovaných akcií):\n\n" + "\n".join(failed_sales)
+            messagebox.showwarning("Částečný úspěch", msg)
+        elif sales_executed > 0:
+            messagebox.showinfo("Úspěch", f"Úspěšně realizováno {sales_executed} prodejů (metodou FIFO).")
 
     # --------------------------------------------------------------------------
     # TAB 3: KALENDÁŘ DIVIDEND
