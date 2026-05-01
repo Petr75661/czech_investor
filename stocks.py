@@ -762,7 +762,10 @@ class CzechInvestorApp:
                 info = yf.Ticker(ticker).info
                 if info:
                     data = {
-                        "pe_ratio": info.get('forwardPE') or info.get('trailingPE') or 15.0,
+                        "pe_ratio": info.get('forwardPE') or info.get('trailingPE'),
+                        "eps": info.get('forwardEps') or info.get('trailingEps'),
+                        "beta": info.get('beta'),
+                        "recommendation": info.get('recommendationKey'),
                         "payout_ratio": info.get('payoutRatio') or 0.0,
                         "target_price": info.get('targetMeanPrice'),
                         "current_price": info.get('currentPrice') or info.get('previousClose')
@@ -773,7 +776,7 @@ class CzechInvestorApp:
                 time.sleep(1.0 + i)
                 
         # Při selhání nebo u ETF vrátíme bezpečné neutrální hodnoty
-        data = {"pe_ratio": 15.0, "payout_ratio": 0.0, "target_price": None, "current_price": None}
+        data = {"pe_ratio": None, "eps": None, "beta": None, "recommendation": None, "payout_ratio": 0.0, "target_price": None, "current_price": None}
         self._fund_cache[ticker] = data
         return data
 
@@ -2974,7 +2977,11 @@ class CzechInvestorApp:
                         "payout_ratio": payout,
                         "raw_yield": raw_yield,
                         "safe_yield": safe_yield,
-                        "limit": limit
+                        "limit": limit,
+                        "pe_ratio": fund.get('pe_ratio'),
+                        "eps": fund.get('eps'),
+                        "beta": fund.get('beta'),
+                        "recommendation": fund.get('recommendation')
                     }
                     
                     # 2. Cílový růst (Analytici vs. Historie)
@@ -5066,13 +5073,50 @@ class CzechInvestorApp:
             for i, wedge in enumerate(self.wedges_weights):
                 if wedge.contains(event)[0]:
                     ticker = self.ordered_tickers[i]
-                    
-                    # Bereme váhy z aktuálně překresleného grafu (zajišťuje kompatibilitu s přepínačem Base/Tuned)
                     weight = getattr(self, '_current_pie_weights', self.sim_weights[self.current_sim_idx])[i]
-                    
-                    # Čárky aplikujeme pouze na samotná čísla, nikoliv na název tickeru
                     weight_str = f"{weight:.1%}".replace('.', ',')
                     target_text = f"{ticker}\nVáha: {weight_str}"
+
+                    # --- NOVÉ: Přidání fundamentů do tooltipu ---
+                    if hasattr(self, 'tuner_fundamentals') and ticker in self.tuner_fundamentals:
+                        fund = self.tuner_fundamentals[ticker]
+                        
+                        # 1. Očekávaný růst (již ho máme spočítaný)
+                        upside = self.tuner_upsides[i]
+                        growth_str = f"{upside*100:+.1f} %".replace('.', ',')
+                        
+                        # 2. P/E a EPS (Ošetření ETF, která to nemají)
+                        pe = fund.get('pe_ratio')
+                        eps = fund.get('eps')
+                        curr = self.get_currency_for_ticker(ticker)
+                        
+                        pe_str = f"{pe:.1f}".replace('.', ',') if pe else "N/A"
+                        eps_str = f"{eps:.2f} {curr}".replace('.', ',') if eps else "N/A"
+                        
+                        # 3. Překlad doporučení analytiků
+                        rec_raw = fund.get('recommendation')
+                        rec_dict = {"buy": "Koupit", "strong_buy": "Silně koupit", "hold": "Držet", "sell": "Prodat", "strong_sell": "Silně prodat", "none": "N/A"}
+                        rec_str = rec_dict.get(rec_raw, "N/A") if rec_raw else "N/A"
+                        
+                        # 4. Citlivost/Riziko pomocí parametru Beta
+                        beta = fund.get('beta')
+                        if beta is None:
+                            risk_str = "N/A"
+                        elif beta < 0.8:
+                            risk_str = "Konzervativní (nízké výkyvy)"
+                        elif beta <= 1.2:
+                            risk_str = "Neutrální (kopíruje trh)"
+                        else:
+                            risk_str = "Agresivní (vysoké výkyvy)"
+                            
+                        # Poskládání textu pod sebe
+                        target_text += f"\n───────────────"
+                        target_text += f"\nOčekávaný růst: {growth_str}"
+                        target_text += f"\nForward P/E: {pe_str}  |  EPS: {eps_str}"
+                        target_text += f"\nTržní riziko: {risk_str}"
+                        target_text += f"\nAnalytici radí: {rec_str}"
+                        target_text += "\n(dvojklik zafixuje váhu)"
+                        
                     break
 
         # Tooltip pro zdroje dividend
