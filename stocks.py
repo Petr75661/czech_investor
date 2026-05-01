@@ -934,7 +934,7 @@ class CzechInvestorApp:
         # že spodní tlačítka nikdy nezmizí při zmenšení okna a smrskne se jen tabulka.
         
         # Spodní rámeček se seznamem k uložení.
-        # ZMĚNA: Nastavujeme expand=True. Při zvětšení okna si tak vezme 
+        # Nastavujeme expand=True. Při zvětšení okna si tak vezme 
         # veškeré přebytečné místo právě tato tabulka. Skvělé pro CSV import!
         final_frame = tk.LabelFrame(main_frame, text="3. Seznam realizovaných obchodů (Připraveno k zápisu)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
         final_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -944,7 +944,7 @@ class CzechInvestorApp:
         edit_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
 
         # Horní rámeček (Kalkulátor).
-        # ZMĚNA: Nastavujeme expand=False. Rámeček tak vyroste přesně na výšku
+        # Nastavujeme expand=False. Rámeček tak vyroste přesně na výšku
         # stromu (např. 16 řádků) a zastaví se. Zabrání se ošklivému prázdnému místu.
         calc_frame = tk.LabelFrame(main_frame, text="1. Teoretický návrh (Kalkulátor)", bg="#f0f2f5", padx=10, pady=5, font=("Arial", 12, "bold"))
         calc_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=False, padx=10, pady=5)
@@ -979,11 +979,17 @@ class CzechInvestorApp:
             self.buy_tree.heading(c, text=c)
             self.buy_tree.column(c, width=w, anchor="center")
         
-        # ZMĚNA: Přidán parametr fill=tk.BOTH, aby se tabulka správně natáhla
+        # Přidán parametr fill=tk.BOTH, aby se tabulka správně natáhla
         self.buy_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_scroll.config(command=self.buy_tree.yview)
         self.buy_tree.bind("<<TreeviewSelect>>", self.fill_entry_from_proposal)
-
+        
+        # Sledování myši pro zobrazení tooltipu nadbytku
+        self.buy_tree.bind("<Motion>", self._on_buy_tree_hover)
+        self.buy_tree.bind("<Leave>", lambda e: self._hide_tooltip())
+        self._buy_excess_data = {}
+        self._last_hovered_buy_item = None
+        
         # --- 3. OBSAH RÁMEČKU 2 (Skutečná realizace) ---
         tk.Label(edit_frame, text="Ticker:", bg="#E3F2FD", font=("Arial", 12)).grid(row=0, column=0, padx=5)
         self.real_ticker = tk.Entry(edit_frame, width=10, font=("Arial", 12))
@@ -1019,7 +1025,7 @@ class CzechInvestorApp:
         staging_scroll = ttk.Scrollbar(staging_container, orient="vertical")
         staging_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # ZMĚNA: Výšku (height) jsem zvednul na 5, aby tabulka vypadala lépe už při spuštění,
+        # Výšku (height) jsem zvednul na 5, aby tabulka vypadala lépe už při spuštění,
         # ale díky expand=True výše na 'final_frame' si po maximalizaci okna vezme spoustu místa navíc.
         self.staging_tree = ttk.Treeview(staging_container, columns=("Ticker", "Datum", "Množství", "Cena", "Akce"), 
                                          show="headings", height=5, yscrollcommand=staging_scroll.set)
@@ -1110,7 +1116,9 @@ class CzechInvestorApp:
                 if required_cash > invest: high = mid
                 else: low = mid; virtual_total = mid
 
-            rows_to_insert =[]
+            rows_to_insert = []
+            excess_data_temp = {} # Slovník pro ukládání nadbytků
+            
             for t, target in TARGETS.items():
                 if target <= 0: continue
                 
@@ -1129,6 +1137,12 @@ class CzechInvestorApp:
                     if qty < 0.001:
                         qty = 0.0
                         czk_alloc = 0.0
+                        
+                        # Výpočet, o kolik je akcie převážená
+                        excess_czk = curr_val - ideal_val
+                        if excess_czk > 0 and price_in_czk > 0:
+                            excess_qty = excess_czk / price_in_czk
+                            excess_data_temp[t] = (excess_qty, excess_czk)
 
                     qty_rounded = round(qty, 3)
                     orig_val = qty_rounded * price
@@ -1145,7 +1159,7 @@ class CzechInvestorApp:
                 except Exception as e: print(f"Skipping {t}: {e}")
 
             # Bezpečný zápis do UI z hlavního vlákna (bezpečné pro Tkinter)
-            self.root.after(0, lambda: self._populate_buy_tree(rows_to_insert))
+            self.root.after(0, lambda r=rows_to_insert, e=excess_data_temp: self._populate_buy_tree(r, e))
 
         finally:
             # Garantované odemčení a skrytí loading animace (provedeno v hlavním vlákně)
@@ -1159,8 +1173,14 @@ class CzechInvestorApp:
         self.hide_loading(self.planner_loading_state)
         self.btn_calc_buys.config(state=tk.NORMAL)
 
-    def _populate_buy_tree(self, rows):
+    def _populate_buy_tree(self, rows, excess_data=None):
         """Pomocná metoda pro bezpečné vypsání dat do tabulky v UI vlákně."""
+        # Uložení informace o nadbytku pro Tooltipy
+        if excess_data is not None:
+            self._buy_excess_data = excess_data
+        else:
+            self._buy_excess_data = {}
+            
         for row in rows:
             self.buy_tree.insert("", "end", values=row)
 
@@ -1183,6 +1203,46 @@ class CzechInvestorApp:
         #clean_price = str(vals[2]).strip()
         self.real_price.delete(0, tk.END)
         self.real_price.insert(0, clean_price)
+
+    def _on_buy_tree_hover(self, event):
+        """Zobrazí tooltip, pokud myš najede na řádek s akcií, která se nekupuje (má nadbytek)."""
+        # Zjištění, nad kterým řádkem myš právě je
+        item = self.buy_tree.identify_row(event.y)
+        
+        # Pokud jsme mimo řádky
+        if not item:
+            self._last_hovered_buy_item = None
+            self._hide_tooltip()
+            return
+            
+        # Pokud se myš hýbe v rámci stejného řádku, nepřekreslujeme (zamezí blikání)
+        if item == getattr(self, '_last_hovered_buy_item', None):
+            return
+            
+        self._last_hovered_buy_item = item
+        
+        # Načtení hodnot z daného řádku
+        values = self.buy_tree.item(item, "values")
+        if not values:
+            self._hide_tooltip()
+            return
+            
+        ticker = str(values[0])
+        
+        # Pokud je ticker ve slovníku nadbytků, ukážeme tooltip
+        if hasattr(self, '_buy_excess_data') and ticker in self._buy_excess_data:
+            # Rozbalíme obě uložené hodnoty
+            excess_qty, excess_czk = self._buy_excess_data[ticker]
+            
+            # Naformátování čísel (čárky pro desetinná místa a mezery pro tisíce u CZK)
+            excess_str = f"{excess_qty:.3f}".replace('.', ',')
+            czk_str = f"{excess_czk:,.0f} Kč".replace(',', ' ')
+            
+            # Použijeme stávající tooltip systém
+            msg = f"{ticker}\nℹ️ Nadbytek v portfoliu:\nDržíte o {excess_str} ks více,\nnež odpovídá cílové váze\n(Hodnota nadbytku: {czk_str})."
+            self._show_tooltip(msg)
+        else:
+            self._hide_tooltip()
 
     def add_manual_entry(self):
         t = self.real_ticker.get().strip()
@@ -3424,6 +3484,12 @@ class CzechInvestorApp:
                                           command=self.start_incremental_refresh, 
                                           font=("Arial", 12, "bold"), bg="#37474F", fg="white")
         self.btn_refresh_stats.pack(side=tk.LEFT)
+
+        # Rámeček pro daňový odhad
+        tax_info_frame = tk.Frame(ctrl_panel, bg="#ECEFF1")
+        tax_info_frame.pack(side=tk.RIGHT, padx=20)
+        self.tax_estimate_lbl = tk.Label(tax_info_frame, text=f"Odhad daně za rok {datetime.now().year}: 0 Kč", font=("Arial", 11, "bold"), bg="#ECEFF1", fg="#BF360C")
+        self.tax_estimate_lbl.pack()
         
         self.btn_export_tax = tk.Button(ctrl_panel, text="📄 EXPORT PDF (DANĚ)", 
                                         command=self.generate_tax_report, 
@@ -3924,6 +3990,14 @@ class CzechInvestorApp:
             
             if is_final:
                 self.status_lbl.config(text=f"Aktualizováno: {datetime.now().strftime('%H:%M:%S')}", fg="green")
+
+            # Aktualizace odhadu daně
+            est = self.calculate_tax_estimate()
+            self.root.after(0, lambda: self.tax_estimate_lbl.config(text=f"Odhad daně za rok {datetime.now().year}: {est:,.0f} Kč".replace(',', ' ')))
+            
+            if is_final:
+                self.status_lbl.config(text=f"Aktualizováno: {datetime.now().strftime('%H:%M:%S')}", fg="green")
+                
         except Exception as e:
             print(f"Error rendering graphs: {e}")
             self.status_lbl.config(text="Chyba výpočtu grafu", fg="red")
@@ -3931,6 +4005,32 @@ class CzechInvestorApp:
     # --------------------------------------------------------------------------
     # DAŇOVÝ MOTOR (ONE-CLICK EXPORT A PDF)
     # --------------------------------------------------------------------------
+
+    def calculate_tax_estimate(self):
+        """Vypočítá informativní odhad daně za aktuální rok."""
+        current_year = datetime.now().year
+        fx = self.get_fx_rates()
+        
+        # 1. Prodeje (§10)
+        taxable_profit = 0.0
+        for sale in self.sales_history:
+            if sale['sell_date'].startswith(str(current_year)):
+                fx_rate = fx.get(sale['currency'], 23.0)
+                profit = (sale['sell_price'] - sale['buy_price']) * sale['qty'] * fx_rate
+                if profit > 0: taxable_profit += profit
+                
+        # 2. Dividendy (§8) - pouze reálné, nikoliv projekce!
+        total_div_gross = 0.0
+        for rd in getattr(self, 'real_dividends', []):
+            if rd['date'].startswith(str(current_year)):
+                total_div_gross += rd['gross'] * fx.get(rd.get('currency', 'USD'), 23.0)
+        
+        # Daňový odhad (Prodeje 15 %, Dividendy 15 %)
+        # Pozn: Pro zjednodušení počítáme 15 % ze zisku, neřešíme osvobození 100k limitu 
+        # (je to jen informativní odhad, aby si investor nechal peníze stranou)
+        tax_est = (taxable_profit * 0.15) + (total_div_gross * 0.15)
+        
+        return int(tax_est)
 
     def generate_tax_report(self):
         if getattr(self, 'dash_loading_state', {}).get("is_loading"): return
