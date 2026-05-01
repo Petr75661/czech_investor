@@ -1116,6 +1116,9 @@ class CzechInvestorApp:
                 if required_cash > invest: high = mid
                 else: low = mid; virtual_total = mid
 
+            # Skutečná hodnota portfolia po zainvestování vložené částky
+            projected_total_val = total_current_portfolio_val + invest
+
             rows_to_insert = []
             excess_data_temp = {} # Slovník pro ukládání nadbytků
             
@@ -1139,8 +1142,12 @@ class CzechInvestorApp:
                         czk_alloc = 0.0
                         
                         # Výpočet, o kolik je akcie převážená
-                        excess_czk = curr_val - ideal_val
-                        if excess_czk > 0 and price_in_czk > 0:
+                        # Místo interní proměnné ideal_val použijeme reálný cílový stav
+                        true_ideal_val = projected_total_val * target
+                        excess_czk = curr_val - true_ideal_val
+                        
+                        # Zobrazíme nadbytek jen pokud je skutečně v plusu (ignorujeme drobné odchylky do 50 Kč)
+                        if excess_czk > 50 and price_in_czk > 0:
                             excess_qty = excess_czk / price_in_czk
                             excess_data_temp[t] = (excess_qty, excess_czk)
 
