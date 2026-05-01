@@ -5076,6 +5076,8 @@ class CzechInvestorApp:
                     weight = getattr(self, '_current_pie_weights', self.sim_weights[self.current_sim_idx])[i]
                     weight_str = f"{weight:.1%}".replace('.', ',')
                     target_text = f"{ticker}\nVáha: {weight_str}"
+                    if getattr(self, 'chart_view_var', None) and self.chart_view_var.get() == "new":
+                        target_text += f" (dvojklik zafixuje váhu)"
 
                     # --- NOVÉ: Přidání fundamentů do tooltipu ---
                     if hasattr(self, 'tuner_fundamentals') and ticker in self.tuner_fundamentals:
@@ -5115,7 +5117,6 @@ class CzechInvestorApp:
                         target_text += f"\nForward P/E: {pe_str}  |  EPS: {eps_str}"
                         target_text += f"\nTržní riziko: {risk_str}"
                         target_text += f"\nAnalytici radí: {rec_str}"
-                        target_text += "\n(dvojklik zafixuje váhu)"
                         
                     break
 
