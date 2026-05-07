@@ -3471,15 +3471,85 @@ class CzechInvestorApp:
             
         global TARGETS
         new_w = self.sim_weights[self.current_sim_idx]
-        for t, w in zip(self.ordered_tickers, new_w):
-            TARGETS[t] = float(w)
-            self.tuner_base_weights[t] = float(w) 
+        
+        # Proměnná pro uchování přesného součtu vah všech akcií kromě té úplně poslední
+        accumulated_sum = 0.0
+        
+        # Zjistíme celkový počet akcií v aktuálním tuningu
+        total_stocks = len(self.ordered_tickers)
+        
+        # Projdeme všechny akcie pomocí indexu, abychom bezpečně poznali tu poslední
+        for i in range(total_stocks):
+            t = self.ordered_tickers[i]
             
-        self.save_data() 
+            if i < total_stocks - 1:
+                # ---------------------------------------------------------
+                # PRO VŠECHNY AKCIE KROMĚ POSLEDNÍ
+                # ---------------------------------------------------------
+                weight = float(new_w[i])
+                
+                # Zápis do hlavních proměnných
+                TARGETS[t] = weight
+                self.tuner_base_weights[t] = weight
+                
+                # Přičteme do průběžného součtu
+                accumulated_sum += weight
+            else:
+                # ---------------------------------------------------------
+                # PRO ÚPLNĚ POSLEDNÍ AKCII
+                # ---------------------------------------------------------
+                # Váhu dopočítáme jako čistý rozdíl, aby součet dal přesně 1.0 (100 %)
+                final_weight = 1.0 - accumulated_sum
+                
+                # Drobná bezpečnostní pojistka: 
+                # Kdyby kvůli matematické chybě floatů byl accumulated_sum např. 1.000000001,
+                # final_weight by vyšla záporná. Funkce max() zaručí, že nikdy neklesne pod 0.
+                final_weight = max(0.0, final_weight)
+                
+                # Zápis vypočítané poslední váhy do hlavních proměnných
+                TARGETS[t] = final_weight
+                self.tuner_base_weights[t] = final_weight
+                
+        self.save_data()
+            
         
         # 'metrics' už je pole o 6 prvcích z vybrané simulace, takže ho jen předáme dál
         metrics = self.sim_metrics[self.current_sim_idx]
         self._update_base_labels(metrics)
+
+        # ---------------------------------------------------------------------
+        # INVALIDACE STARÝCH VÝPOČTŮ (PROJEVENÍ ZMĚN VE ZBYTKU APLIKACE)
+        # ---------------------------------------------------------------------
+        # Jelikož proměnná TARGETS je globální, matematické jádro už nové váhy zná.
+        # Nyní ale musíme smazat staré výsledky z obrazovek, aby uživatel neprovedl 
+        # obchody podle neplatných tabulek a byl nucen si návrhy nechat spočítat znovu.
+        
+        # 1. Vymazání starého návrhu na záložce "Nákup"
+        if hasattr(self, 'buy_tree'):
+            for item in self.buy_tree.get_children():
+                self.buy_tree.delete(item)
+                
+        # 2. Vymazání kalkulátoru pro výběr hotovosti na záložce "Prodej"
+        # (Tento kalkulátor také používá cílové váhy)
+        if hasattr(self, 'sell_staging_tree'):
+            for item in self.sell_staging_tree.get_children():
+                self.sell_staging_tree.delete(item)
+                
+        # 3. Invalidace záložky "Kalendář dividend"
+        # Pokud si tam uživatel dříve nechal vykreslit "Teoretické portfolio",
+        # po změně vah grafy přestanou platit.
+        if hasattr(self, 'div_tree') and hasattr(self, 'div_mode_var'):
+            if self.div_mode_var.get() == "target":
+                # Vyprázdnění tabulky dividend
+                for item in self.div_tree.get_children():
+                    self.div_tree.delete(item)
+                # Změna textu pod grafem, aby bylo zřejmé, že musí načíst data znovu
+                if hasattr(self, 'div_total_lbl'):
+                    self.div_total_lbl.config(text="Změněny váhy. Prosím, načtěte data znovu.")
+                # Změna stavového popisku
+                if hasattr(self, 'div_status_lbl'):
+                    self.div_status_lbl.config(text="Čekám na přepočet...", fg="grey")
+
         messagebox.showinfo("Úspěch", "Nové cílové váhy byly úspěšně aplikovány a uloženy do souboru. Záložka Nákupu bude nyní počítat návrhy s těmito novými vahami.")
 
     # --------------------------------------------------------------------------
