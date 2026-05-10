@@ -2177,9 +2177,18 @@ class CzechInvestorApp:
         ctrl_panel.pack(fill=tk.X, padx=20, pady=10)
         
         self.div_mode_var = tk.StringVar(value="real")
-        self.rb_div_target = tk.Radiobutton(ctrl_panel, text="Teoretické cílové portfolio (Dle nastavených vah)", variable=self.div_mode_var, value="target", bg="#E8F5E9", font=("Arial", 12))
+        
+        # při kliknutí na radio button se ihned spustí vlákno na pozadí, ukáže se loading a data se přegenerují.
+        self.rb_div_target = tk.Radiobutton(ctrl_panel, text="Teoretické cílové portfolio (Dle nastavených vah)", 
+                                            variable=self.div_mode_var, value="target", 
+                                            bg="#E8F5E9", font=("Arial", 12),
+                                            command=self.start_refresh_dividends)
         self.rb_div_target.pack(side=tk.LEFT, padx=10)
-        self.rb_div_real = tk.Radiobutton(ctrl_panel, text="Reálné portfolio (Ledger)", variable=self.div_mode_var, value="real", bg="#E8F5E9", font=("Arial", 12))
+        
+        self.rb_div_real = tk.Radiobutton(ctrl_panel, text="Reálné portfolio (Ledger)", 
+                                          variable=self.div_mode_var, value="real", 
+                                          bg="#E8F5E9", font=("Arial", 12),
+                                          command=self.start_refresh_dividends)
         self.rb_div_real.pack(side=tk.LEFT, padx=10)
         
         self.btn_refresh_divs = tk.Button(ctrl_panel, text="📅 NAČÍST DATA", 
