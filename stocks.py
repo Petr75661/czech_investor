@@ -1352,6 +1352,8 @@ class CzechInvestorApp:
                 if s in known_symbols: return s
                 if s + ".L" in known_symbols: return s + ".L"
                 if s + ".UK" in known_symbols: return s + ".UK"
+                # Oprava pro IBKR - někdy k britským akciím přidá malé 'l' (např. LGENl -> LGEN.L)
+                if s.endswith('l') and s[:-1] + ".L" in known_symbols: return s[:-1] + ".L"
                 return s
 
             # --- EXTRAKCE DATA VYGENEROVÁNÍ REPORTU ---
@@ -1540,9 +1542,13 @@ class CzechInvestorApp:
             parsed_dividends = {}
             for row in rows:
                 if len(row) > 5 and row[0] == 'Dividends' and row[1] == 'Data' and not row[2].startswith('Total'):
+                    desc = row[4]
+                    # Ignorovat úroky z hotovosti
+                    if "Credit Interest" in desc or "Interest" in desc:
+                        continue
+
                     currency = row[2]
                     date_str = row[3]
-                    desc = row[4]
                     amount = safe_float(row[5])
                     
                     # Extrakce tickeru (např. "JNJ(US4781601046) Cash Dividend..." -> "JNJ")
@@ -1555,9 +1561,13 @@ class CzechInvestorApp:
                     parsed_dividends[key]['gross'] += amount
 
                 elif len(row) > 5 and row[0] == 'Withholding Tax' and row[1] == 'Data' and not row[2].startswith('Total'):
+                    desc = row[4]
+                    # Ignorovat srážkovou daň z úroků na hotovosti
+                    if "Credit Interest" in desc or "Interest" in desc or desc.startswith("Withholding @"):
+                        continue
+
                     currency = row[2]
                     date_str = row[3]
-                    desc = row[4]
                     amount = safe_float(row[5])
                     
                     raw_ticker = desc.split('(')[0].split(' ')[0].strip()
