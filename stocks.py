@@ -2871,29 +2871,40 @@ class CzechInvestorApp:
 
     def _evaluate_dividend_safety(self, sector, raw_yield, payout):
         """Centrální metoda pro posouzení bezpečnosti dividendy a detekci anomálií."""
+        
+        # 1. REITs a BDCs (Real Estate, Financial)
+        # Payout ratio založené na GAAP EPS je u nich strukturální nesmysl
+        # (kvůli masivním odpisům nemovitostí a nerealizovaným ztrátám z přecenění portfolia).
+        # U těchto sektorů ho budeme vždy ignorovat jako anomálii (-1).
         if sector in ["Real Estate", "Financial", "Financial Services"]:
-            # U BDC a REITů tvoří rozdíl mezi GAAP ziskem a reálným cash-flow propastný rozdíl.
-            # Cokoliv nad 100 % (často nerealizované účetní ztráty či odpisy) označíme za anomálii.
-            limit = 1.0
-            anomaly_threshold = 1.0
-        elif sector == "Consumer Defensive":
-            # Pro Consumer Defensive (PEP, ULVR) dáme toleranci do 95 %, protože mají extrémně stabilní cash-flow.
+            return raw_yield, -1, 1.0
+
+        # 2. Nastavení bezpečného limitu podle sektoru
+        # Sektory se stabilním cash-flow (potraviny, pití, utility) snesou vyšší payout.
+        if sector in ["Consumer Defensive", "Utilities"]:
             limit = 0.95
-            anomaly_threshold = 2.0
         else:
-            limit = 0.9
-            anomaly_threshold = 2.0
-            
-        # Účetní anomálie z odpisů nemovitostí a nerealizovaných ztrát.
-        # V takovém případě věříme reálnému cash-flow a dividendu nepenalizujeme.
-        if payout > anomaly_threshold:
-            safe_yield = raw_yield
-            effective_payout = -1 # Značka pro Tooltip, že data z Yahoo jsou účetně zkreslená
-        else:
-            safe_yield = raw_yield if payout <= limit else raw_yield * DIV_YIELD_DROP
-            effective_payout = payout
-            
-        return safe_yield, effective_payout, limit
+            limit = 0.85 # Běžné firmy (např. Technologie, Zdravotnictví)
+
+        # 3. Detekce jednorázových účetních anomálií u běžných firem
+        # Payout < 0 znamená záporné EPS (účetní ztráta).
+        # Payout > 1.5 (150 %) znamená masivní propad zisku.
+        # Velké dividendové firmy (jako MRK) zřídka sníží dividendu kvůli jednomu 
+        # špatnému kvartálu způsobenému odpisy nebo jednorázovou akvizicí.
+        if payout < 0 or payout > 1.5:
+            return raw_yield, -1, limit
+
+        # 4. Inteligentní proporcionální snížení
+        # Pokud firma mírně přetahuje limit (např. payout 1.10 při limitu 0.85),
+        # aplikujeme matematický předpoklad: "Firma sníží dividendu přesně o tolik, 
+        # aby se dostala na bezpečný limit".
+        if payout > limit:
+            # Příklad: 0.85 / 1.10 = 0.77 (Predikujeme, že dividendu srazí na 77 % současné hodnoty)
+            safe_yield = raw_yield * (limit / payout)
+            return safe_yield, payout, limit
+
+        # 5. Dividenda je plně krytá ziskem
+        return raw_yield, payout, limit
         
     def initialize_tuner_data(self, force_download=True, n_sims=None, auto_improve=False):
         import time 
@@ -4078,7 +4089,7 @@ class CzechInvestorApp:
                 plot_colors = [c_map[i % len(c_map)] for i in range(len(active_tickers))]
                 
                 self.ax3.stackplot(years, stack_data, labels=plot_tickers, colors=plot_colors, alpha=0.85)
-                self.ax3.set_title("Zdroje dividend v čase (Vrstvový graf)")
+                self.ax3.set_title("Zdroje dividend v čase")
                 self.ax3.set_ylabel("Dividendy [Kč]")
                 self.ax3.set_xticks(years)
                 self.ax3.set_xticklabels([str(y) for y in years])
