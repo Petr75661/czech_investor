@@ -95,7 +95,7 @@ CURRENCIES = {
 LIMITS = {
     "MAX_SINGLE_WEIGHT": 0.15,   
     "MAX_SECTOR_WEIGHT": 0.35,   
-    "MAX_BDC_REIT_WEIGHT": 0.25, 
+    "MAX_RATE_SENSITIVE_WEIGHT": 0.30, # Max podíl firem citlivých na sazby (REIT, BDC, Utility)
     "MIN_POSITIONS": 8,
     "MAX_POSITIONS": 25,
     "MIN_GROWTH_RATIO": 0.25,     
@@ -174,6 +174,17 @@ DEFAULT_STOCK_DB = {
     "EQQQ.L": {"name": "iShares NASDAQ 100 (Dist)", "sector": "ETF", "tags": [], "yield": 0.5, "growth": 55.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
     "CNDX.L": {"name": "iShares NASDAQ 100 (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 56.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
     "IWDP.L": {"name": "iShares Global REITs (Dist)", "sector": "ETF", "tags": [], "yield": 3.8, "growth": 2.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
+}
+
+# Seznam tickerů pro účely výpočtu úrokového rizika (REITs, BDCs, Utility)
+# Rozšiřitelný seznam, který aplikace použije pro Stress Test
+INTEREST_RATE_SENSITIVE_TICKERS = {
+    # BDC (Business Development Companies)
+    "MAIN", "HTGC", "ARCC", "OBDC", "BXSL", "CSWC", "GBDC", "FSK", "TSLX", "TRIN", "PSEC", "OCSL", "GSBD",
+    # REITs (Real Estate Investment Trusts) - nejznámější
+    "O", "VICI", "WPC", "AMT", "PLD", "CCI", "SPG", "PSA", "DLR", "EQIX", "WELL", "VTR", "AVB", "INVH",
+    # Utility (Infrastruktura s vysokým dluhem)
+    "NEE", "TRIG.L", "PWR", "DUK", "SO", "NG.L", "SSE.L"
 }
 
 # Parametry pro Monte Carlo tuning portfolia
@@ -2614,11 +2625,12 @@ class CzechInvestorApp:
         
         # Zabalení do ohraničeného rámečku s popiskem
         cb_container = tk.LabelFrame(control_panel, text="Které akcie chcete tunit? (nezaškrtlé = fixováno)", bg="#FFF8E1", font=("Arial", 11, "bold"))
-        cb_container.pack(fill=tk.X, pady=(0, 10))
+        # rámeček se zvětšuje s oknem (slouží jako flexibilní výplň)
+        cb_container.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         # Vytvoření Canvasu a Scrollbaru pro scrollovatelný obsah
-        # Výška 146 px ukáže zhruba 5 řádků akcií (15 titulů). Při více titulech se objeví posuvník.
-        self.cb_canvas = tk.Canvas(cb_container, bg="#FFF8E1", highlightthickness=0, height=146)
+        # minimální výška (height=40), zbytek volného místa si vezme expand=True
+        self.cb_canvas = tk.Canvas(cb_container, bg="#FFF8E1", highlightthickness=0, height=40)
         self.cb_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         cb_scrollbar = ttk.Scrollbar(cb_container, orient="vertical", command=self.cb_canvas.yview)
@@ -2723,12 +2735,33 @@ class CzechInvestorApp:
         
         for s in self.sliders.values(): s.config(state="disabled")
 
-        # --- BLOK VOLATILITY (RIZIKA) ---
-        tk.Label(control_panel, text="Celkové riziko portfolia (volatilita):", bg="#FFF8E1", font=("Arial", 12, "bold")).pack(anchor="w", pady=(15, 0))
-        self.lbl_risk_text = tk.Label(control_panel, text="---", bg="#FFF8E1", font=("Arial", 12, "bold"))
-        self.lbl_risk_text.pack(anchor="w", pady=(2, 5))
-        self.risk_progress = ttk.Progressbar(control_panel, orient=tk.HORIZONTAL, length=500, mode='determinate', maximum=30)
-        self.risk_progress.pack(pady=(0, 10))
+        # --- BLOK ANALÝZY RIZIK (SEMAFOR) ---
+        self.risk_frame_container = tk.LabelFrame(control_panel, text="Analýza rizik (Nové rozložení - tuned)", bg="#FFF8E1", font=("Arial", 12, "bold"))
+        self.risk_frame_container.pack(fill=tk.X, pady=(15, 10))
+        
+        # 1. Volatilita (Beta)
+        self.lbl_title_beta = tk.Label(self.risk_frame_container, text="Tržní volatilita (beta):", bg="#FFF8E1", font=("Arial", 12))
+        self.lbl_title_beta.grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        self.lbl_risk_beta = tk.Label(self.risk_frame_container, text="---", bg="#FFF8E1", font=("Arial", 12, "bold"))
+        self.lbl_risk_beta.grid(row=0, column=1, sticky="w", padx=5)
+
+        # 2. Úrokové riziko
+        self.lbl_title_rates = tk.Label(self.risk_frame_container, text="Úrokové riziko (dluhy/REIT/BDC):", bg="#FFF8E1", font=("Arial", 12))
+        self.lbl_title_rates.grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        self.lbl_risk_rates = tk.Label(self.risk_frame_container, text="---", bg="#FFF8E1", font=("Arial", 12, "bold"))
+        self.lbl_risk_rates.grid(row=1, column=1, sticky="w", padx=5)
+
+        # 3. Sektorová koncentrace
+        self.lbl_title_sector = tk.Label(self.risk_frame_container, text="Nejsilnější sektor:", bg="#FFF8E1", font=("Arial", 12))
+        self.lbl_title_sector.grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        self.lbl_risk_sector = tk.Label(self.risk_frame_container, text="---", bg="#FFF8E1", font=("Arial", 12, "bold"))
+        self.lbl_risk_sector.grid(row=2, column=1, sticky="w", padx=5)
+        
+        # 4. Koncentrace jedné akcie
+        self.lbl_title_single = tk.Label(self.risk_frame_container, text="Max. váha jedné akcie:", bg="#FFF8E1", font=("Arial", 12))
+        self.lbl_title_single.grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        self.lbl_risk_single = tk.Label(self.risk_frame_container, text="---", bg="#FFF8E1", font=("Arial", 12, "bold"))
+        self.lbl_risk_single.grid(row=3, column=1, sticky="w", padx=5)
 
         # Uložení reference na potvrzovací tlačítko
         self.btn_apply_weights = tk.Button(control_panel, text="✓ POUŽÍT NOVÉ VÁHY", command=self.apply_tuned_weights, bg="#2E7D32", fg="white", font=("Arial", 12, "bold"))
@@ -2738,33 +2771,32 @@ class CzechInvestorApp:
         base_frame = tk.LabelFrame(control_panel, text="Aktuální (base)", bg="#FFF8E1", font=("Arial", 12, "bold"))
         base_frame.pack(fill=tk.X)
         
-        tk.Label(base_frame, text="Hrubá div:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=0, sticky="w")
-        self.lbl_base_div = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
+        base_perf_frame = tk.Frame(base_frame, bg="#FFF8E1")
+        base_perf_frame.pack(fill=tk.X)
+        
+        tk.Label(base_perf_frame, text="Hrubá div:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=0, sticky="w", pady=2)
+        self.lbl_base_div = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
         self.lbl_base_div.grid(row=0, column=1, sticky="w", padx=(0,15))
         
-        tk.Label(base_frame, text="Bezpečná div:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=2, sticky="w")
-        self.lbl_base_fdiv = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#0288D1", font=("Arial", 12, "bold"))
+        tk.Label(base_perf_frame, text="Bezpečná div:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=2, sticky="w", pady=2)
+        self.lbl_base_fdiv = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#0288D1", font=("Arial", 12, "bold"))
         self.lbl_base_fdiv.grid(row=0, column=3, sticky="w")
         
-        tk.Label(base_frame, text="Pokles:", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=0, sticky="w")
-        self.lbl_base_dd = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
+        tk.Label(base_perf_frame, text="Pokles:", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=0, sticky="w", pady=2)
+        self.lbl_base_dd = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
         self.lbl_base_dd.grid(row=1, column=1, sticky="w", padx=(0,15))
         
-        tk.Label(base_frame, text="Krizový propad:", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=2, sticky="w")
-        self.lbl_base_fdd = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
+        tk.Label(base_perf_frame, text="Krizový propad:", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=2, sticky="w", pady=2)
+        self.lbl_base_fdd = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
         self.lbl_base_fdd.grid(row=1, column=3, sticky="w")
 
-        tk.Label(base_frame, text="Růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=0, sticky="w")
-        self.lbl_base_growth = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
+        tk.Label(base_perf_frame, text="Růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=0, sticky="w", pady=2)
+        self.lbl_base_growth = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
         self.lbl_base_growth.grid(row=2, column=1, sticky="w", padx=(0,15))
         
-        tk.Label(base_frame, text="Očekávaný růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=2, sticky="w")
-        self.lbl_base_fgrowth = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#0288D1", font=("Arial", 12, "bold"))
+        tk.Label(base_perf_frame, text="Oček. růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=2, sticky="w", pady=2)
+        self.lbl_base_fgrowth = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#0288D1", font=("Arial", 12, "bold"))
         self.lbl_base_fgrowth.grid(row=2, column=3, sticky="w")
-
-        tk.Label(base_frame, text="Volatilita:", bg="#FFF8E1", font=("Arial", 12)).grid(row=3, column=0, sticky="w")
-        self.lbl_base_vol = tk.Label(base_frame, text="---", bg="#FFF8E1", fg="#F57F17", font=("Arial", 12, "bold"))
-        self.lbl_base_vol.grid(row=3, column=1, sticky="w")
 
         viz_panel = tk.Frame(self.tuner_frame, bg="white")
         viz_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -2860,8 +2892,6 @@ class CzechInvestorApp:
         self.lbl_base_fdiv.config(text=f"{metrics[3]:,.0f} Kč".replace(',', ' '))
         self.lbl_base_fdd.config(text=f"{metrics[4]:.1f} %".replace('.', ','))
         self.lbl_base_fgrowth.config(text=f"{metrics[5]:.1f} %".replace('.', ','))
-        if len(metrics) > 6:
-            self.lbl_base_vol.config(text=f"{metrics[6]:.1f} %".replace('.', ','))
         
     def on_checkbox_toggle(self):
         if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
@@ -3082,7 +3112,7 @@ class CzechInvestorApp:
                 # 3. Sbalení všech 6 metrik do jednoho pole a odeslání do UI
                 b_m =[b_div, b_dd, b_growth, b_fdiv, b_fdd, b_fgrowth, b_vol * 100]
                 self.base_metrics_data = b_m # Uložíme pro potřeby kreslení grafu
-                self.root.after(0, lambda: self._update_base_labels(b_m))
+                self.root.after(0, lambda m=b_m, bw=base_w_exact: [self._update_base_labels(m), self._update_risk_dashboard(bw, is_base=True)])
             
             # Načtení custom limitů z instance třídy (získané validátorem textových polí)
             adj_min_w = getattr(self, 'custom_min_w', MIN_W)
@@ -3317,20 +3347,8 @@ class CzechInvestorApp:
             if not (from_user_interaction and skip_key == k):
                 self.sliders[k].set(metrics[i])
 
-        # --- AKTUALIZACE VOLATILITY ---
-        if hasattr(self, 'tuner_cov_matrix'):
-            cov_mat = self.tuner_cov_matrix.values
-            port_var = np.dot(weights.T, np.dot(cov_mat, weights))
-            port_vol = np.sqrt(port_var) * 100 
-            
-            if port_vol < 12.0: risk_word, r_color = "Nízké (konzervativní)", "#2E7D32"
-            elif port_vol < 16.0: risk_word, r_color = "Střední (vyvážené)", "#F57F17"
-            elif port_vol < 22.0: risk_word, r_color = "Vyšší (dynamické)", "#E65100"
-            else: risk_word, r_color = "Vysoké (agresivní)", "#C62828"
-                
-            vol_str = f"{port_vol:.1f}".replace('.', ',')
-            self.lbl_risk_text.config(text=f"{risk_word} ({vol_str} % p.a.)", fg=r_color)
-            self.risk_progress['value'] = min(port_vol, 30.0)
+        # --- AKTUALIZACE SEMAFORU RIZIK ---
+        self._update_risk_dashboard(weights)
                 
         # Samotné překreslení grafů delegujeme na metodu, která přečte stav přepínačů
         self._redraw_tuner_charts()
@@ -3340,12 +3358,214 @@ class CzechInvestorApp:
         self.root.update_idletasks()
         self.updating_sliders = False
 
+
+    def _update_risk_dashboard(self, weights, is_base=False):
+        """Vyhodnocuje makro a mikro rizika portfolia a počítá kvantitativní dopady (Stress testy)."""
+        db = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+        
+        rate_sensitive_weight = 0.0
+        rate_sensitive_total_drop_pct = 0.0
+        rate_div_contribution = 0.0
+        total_div_yield = 0.0
+        sector_weights = {}
+        max_single_weight = 0.0
+        max_single_ticker = ""
+        weighted_beta = 0.0
+        total_beta_weight = 0.0
+        
+        # 1. Agregace dat podle vah
+        for i, t in enumerate(self.ordered_tickers):
+            w = weights[i]
+            if w <= 0.001: continue
+            
+            meta = db.get(t, {})
+            sector = meta.get("sector", "Unknown")
+            name = meta.get("name", t)
+            
+            # Získání přesného výnosu z dat Tuneru pro maximální přesnost tooltipu
+            if hasattr(self, 'tuner_stock_divs'):
+                stock_yield = self.tuner_stock_divs[i]
+            else:
+                stock_yield = meta.get("yield", 0.0) / 100.0
+                
+            total_div_yield += w * stock_yield
+            
+            if w > max_single_weight:
+                max_single_weight = w
+                max_single_ticker = t
+                
+            if sector != "ETF":
+                sector_weights[sector] = sector_weights.get(sector, 0.0) + w
+                
+            if sector in ["Real Estate", "Utilities"] or "Capital" in name or t in INTEREST_RATE_SENSITIVE_TICKERS:
+                rate_sensitive_weight += w
+                # Zjištění, kolik z aktuální hrubé dividendy tvoří tito "dlužníci"
+                rate_div_contribution += w * stock_yield
+                # Výpočet procentuálního poklesu hodnot citlivých akcií (typický pokles o 15 %, vážený betou)
+                # REITs a BDCs jsou extrémně citlivé, doporučený multiplikátor 1.0 - 1.2
+                beta_adj = self.tuner_fundamentals[t].get("beta", 1.0)
+                rate_sensitive_total_drop_pct += w * (0.15 * max(1.0, beta_adj))
+                
+            if hasattr(self, 'tuner_fundamentals') and t in self.tuner_fundamentals:
+                beta = self.tuner_fundamentals[t].get("beta")
+                if beta is not None:
+                    weighted_beta += beta * w
+                    total_beta_weight += w
+                    
+        # 2. Vyhodnocení, vizualizace a TOOLTIPY
+        
+        # A) Beta (Tržní riziko)
+        if total_beta_weight > 0:
+            final_beta = weighted_beta / total_beta_weight
+            if final_beta < 0.85: beta_txt, beta_col = f"{final_beta:.2f} (Defenzivní)", "#2E7D32"
+            elif final_beta <= 1.15: beta_txt, beta_col = f"{final_beta:.2f} (Neutrální)", "#F57F17"
+            else: beta_txt, beta_col = f"{final_beta:.2f} (Agresivní)", "#C62828"
+            
+            # Bezpečné naformátování čísel před vložením do textu
+            beta_val_str = f"{final_beta:.2f}".replace('.', ',')
+            beta_drop_str = f"{(20 * final_beta):.1f}".replace('.', ',')
+            
+            beta_tt = (f"Tržní volatilita (Beta) měří citlivost na pohyby celého trhu.\n"
+                       f"Beta = 1.0 znamená, že portfolio plně kopíruje výkyvy trhu.\n\n"
+                       f"Vaše vážená Beta = {beta_val_str}.\n"
+                       f"Při běžném krizovém propadu S&P 500 o 20 % by vaše portfolio\n"
+                       f"mělo teoreticky klesnout o {beta_drop_str} %.")
+        else:
+            beta_txt, beta_col, final_beta = "N/A", "grey", 1.0
+            beta_tt = "Nedostatek dat pro výpočet Bety."
+            
+        # B) Úrokové riziko (Sazby)
+        rate_limit = LIMITS["MAX_RATE_SENSITIVE_WEIGHT"]
+        rate_str = f"{rate_sensitive_weight*100:.1f} %".replace('.', ',')
+        if rate_sensitive_weight <= rate_limit * 0.7: r_col, r_txt = "#2E7D32", f"{rate_str} (Nízké)"
+        elif rate_sensitive_weight <= rate_limit: r_col, r_txt = "#F57F17", f"{rate_str} (Zvýšené)"
+        else: r_col, r_txt = "#C62828", f"{rate_str} ⚠️ (Vysoké)"
+        
+        # Kvantitativní výpočet šoku: Akcie padnou o 15 % (ošetřené o betu - vážený průměr citlivostí), dividendy se plošně seškrtají o 10 %
+        drop_czk = 100000 * rate_sensitive_total_drop_pct
+        drop_pct = rate_sensitive_total_drop_pct * 100
+        div_cut_czk = 100000 * rate_div_contribution * 0.10
+        yield_before = total_div_yield * 100
+        yield_after = (total_div_yield - (rate_div_contribution * 0.10)) * 100
+        
+        # Bezpečné naformátování
+        drop_czk_str = f"{drop_czk:,.0f}".replace(',', ' ')
+        div_cut_str = f"{div_cut_czk:,.0f}".replace(',', ' ')
+        drop_pct_str = f"{drop_pct:.1f}".replace('.', ',')
+        yield_before_str = f"{yield_before:.1f}".replace('.', ',')
+        yield_after_str = f"{yield_after:.1f}".replace('.', ',')
+        
+        rate_tt = (f"Společnosti typu BDC, REIT a Utility využívají masivní cizí kapitál.\n"
+                   f"Růst úrokových sazeb centrálními bankami jim plošně prodražuje splácení dluhů.\n"
+                   f"(Pozn.: Úrokové cykly v USA a Evropě jsou silně propojené, jde o globální riziko).\n\n"
+                   f"Při nečekaném šoku (růst sazeb o 2 %) tyto akcie historicky klesají o 15 %.\n"
+                   f"Na ukázkovém portfoliu 100 000 Kč by to pro vás znamenalo:\n"
+                   f"• Okamžitý propad hodnoty portfolia o {drop_czk_str} Kč ({drop_pct_str} %)\n"
+                   f"• Seškrtání vašich ročních dividend odhadem o {div_cut_str} Kč ({yield_before_str} % → {yield_after_str} %).")
+        
+        # C) Sektorová koncentrace
+        if sector_weights:
+            max_sector = max(sector_weights, key=sector_weights.get)
+            max_sec_w = sector_weights[max_sector]
+            sec_str = f"{max_sector} ({max_sec_w*100:.1f} %)".replace('.', ',')
+            if max_sec_w <= LIMITS["MAX_SECTOR_WEIGHT"] * 0.8: s_col = "#2E7D32"
+            elif max_sec_w <= LIMITS["MAX_SECTOR_WEIGHT"]: s_col = "#F57F17"
+            else: s_col = "#C62828"; sec_str += " ⚠️"
+            
+            sec_w_str = f"{max_sec_w*100:.1f}".replace('.', ',')
+            sec_drop_str = f"{(30 * max_sec_w):.1f}".replace('.', ',')
+            
+            sec_tt = (f"Nejsilnější sektor ({max_sector}) tvoří {sec_w_str} % portfolia.\n\n"
+                      f"Pokud toto odvětví zasáhne krize (např. splasknutí tech bubliny)\n"
+                      f"a sektor se propadne o 30 %, vaše celkové portfolio odepíše {sec_drop_str} %.\n\n"
+                      f"Doporučený limit je max {LIMITS['MAX_SECTOR_WEIGHT']*100:.0f} %, aby vás jeden sektor nepoložil.")
+        else:
+            sec_str, s_col = "Pouze ETF", "#2E7D32"
+            sec_tt = "Máte pouze ETF. Tato jsou vnitřně sektorově diverzifikována."
+            
+        # D) Riziko koncentrace do jedné firmy (Stock-picking)
+        single_str = f"{max_single_weight*100:.1f} %".replace('.', ',')
+        if max_single_weight <= LIMITS["MAX_SINGLE_WEIGHT"] * 0.7: sing_col = "#2E7D32"
+        elif max_single_weight <= LIMITS["MAX_SINGLE_WEIGHT"]: sing_col = "#F57F17"
+        else: sing_col = "#C62828"; single_str += " ⚠️"
+        
+        sing_w_str = f"{max_single_weight*100:.1f}".replace('.', ',')
+        sing_drop_str = f"{(50 * max_single_weight):.1f}".replace('.', ',')
+        
+        single_tt = (f"Největší pozice ({max_single_ticker}) tvoří {sing_w_str} % majetku.\n\n"
+                     f"I ty nejlepší firmy mohou zkrachovat nebo ztratit 50 % hodnoty\n"
+                     f"kvůli nečekanému účetnímu skandálu či ztrátě trhu.\n"
+                     f"Při takovém scénáři by vaše celkové portfolio ztratilo {sing_drop_str} %.\n\n"
+                     f"Diverzifikace vás před tímto 'Stock-picking' rizikem chrání.")
+
+        # 3. Uložení dat do paměti a spuštění překreslení (Trojice: Text, Barva, Tooltip)
+        risk_data = {
+            'beta': (beta_txt, beta_col, beta_tt),
+            'rates': (r_txt, r_col, rate_tt),
+            'sector': (sec_str, s_col, sec_tt),
+            'single': (single_str, sing_col, single_tt)
+        }
+
+        if is_base:
+            self._base_risk_data = risk_data
+        else:
+            self._tuned_risk_data = risk_data
+
+        self._apply_risk_ui()
+
+    def _apply_risk_ui(self):
+        """Aplikuje uložená rizika do společného UI panelu podle vybraného radio buttonu."""
+        view_mode = getattr(self, 'chart_view_var', tk.StringVar(value="new")).get()
+        
+        if view_mode == "base" and hasattr(self, '_base_risk_data'):
+            data = self._base_risk_data
+            if hasattr(self, 'risk_frame_container'):
+                self.risk_frame_container.config(text="Analýza rizik (aktuální portfolio - base)")
+        elif hasattr(self, '_tuned_risk_data'):
+            data = self._tuned_risk_data
+            if hasattr(self, 'risk_frame_container'):
+                self.risk_frame_container.config(text="Analýza rizik (nové rozložení - tuned)")
+        else:
+            return
+
+        # Pomocná funkce pro navázání Tooltipu na levý text i pravou hodnotu
+        def bind_tt(lbl_title, lbl_value, text):
+            if hasattr(self, lbl_title):
+                widget = getattr(self, lbl_title)
+                # Tímto se zajistí, že se předchozí tooltip (např. z base portfolia) bezpečně přepíše
+                widget.bind("<Enter>", lambda e, t=text: self._show_tooltip(t))
+                widget.bind("<Leave>", lambda e: self._hide_tooltip())
+            if hasattr(self, lbl_value):
+                widget = getattr(self, lbl_value)
+                widget.bind("<Enter>", lambda e, t=text: self._show_tooltip(t))
+                widget.bind("<Leave>", lambda e: self._hide_tooltip())
+
+        if hasattr(self, 'lbl_risk_beta'):
+            self.lbl_risk_beta.config(text=data['beta'][0], fg=data['beta'][1])
+            self.lbl_risk_rates.config(text=data['rates'][0], fg=data['rates'][1])
+            self.lbl_risk_sector.config(text=data['sector'][0], fg=data['sector'][1])
+            self.lbl_risk_single.config(text=data['single'][0], fg=data['single'][1])
+            
+            # Pověšení dynamických Tooltipů
+            bind_tt('lbl_title_beta', 'lbl_risk_beta', data['beta'][2])
+            bind_tt('lbl_title_rates', 'lbl_risk_rates', data['rates'][2])
+            bind_tt('lbl_title_sector', 'lbl_risk_sector', data['sector'][2])
+            bind_tt('lbl_title_single', 'lbl_risk_single', data['single'][2])
+
+
     def _redraw_tuner_charts(self):
         if getattr(self, 'sim_weights', None) is None: return
         
         view_mode = getattr(self, 'chart_view_var', tk.StringVar(value="new")).get()
         new_weights = self.sim_weights[self.current_sim_idx]
         base_w = np.array([self.tuner_base_weights.get(t, 0) for t in self.ordered_tickers])
+        
+        # Aktivace / Deaktivace sliderů a přepnutí risk panelu podle režimu
+        slider_state = "disabled" if view_mode == "base" else "normal"
+        if hasattr(self, 'sliders'):
+            for s in self.sliders.values():
+                s.config(state=slider_state)
+        self._apply_risk_ui()
         
         if view_mode == "base":
             plot_weights = base_w
@@ -3546,6 +3766,7 @@ class CzechInvestorApp:
         # 'metrics' už je pole o 6 prvcích z vybrané simulace, takže ho jen předáme dál
         metrics = self.sim_metrics[self.current_sim_idx]
         self._update_base_labels(metrics)
+        self._update_risk_dashboard(new_w, is_base=True)
 
         # ---------------------------------------------------------------------
         # INVALIDACE STARÝCH VÝPOČTŮ (PROJEVENÍ ZMĚN VE ZBYTKU APLIKACE)
