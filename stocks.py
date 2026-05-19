@@ -2739,7 +2739,7 @@ class CzechInvestorApp:
         self.risk_frame_container = tk.LabelFrame(control_panel, text="Analýza rizik (Nové rozložení - tuned)", bg="#FFF8E1", font=("Arial", 12, "bold"))
         self.risk_frame_container.pack(fill=tk.X, pady=(15, 10))
         
-        # 1. Volatilita (Beta)
+        # 1. Volatilita (beta)
         self.lbl_title_beta = tk.Label(self.risk_frame_container, text="Tržní volatilita (beta):", bg="#FFF8E1", font=("Arial", 12))
         self.lbl_title_beta.grid(row=0, column=0, sticky="w", padx=5, pady=2)
         self.lbl_risk_beta = tk.Label(self.risk_frame_container, text="---", bg="#FFF8E1", font=("Arial", 12, "bold"))
@@ -3425,9 +3425,9 @@ class CzechInvestorApp:
             beta_val_str = f"{final_beta:.2f}".replace('.', ',')
             beta_drop_str = f"{(20 * final_beta):.1f}".replace('.', ',')
             
-            beta_tt = (f"Tržní volatilita (Beta) měří citlivost na pohyby celého trhu.\n"
+            beta_tt = (f"Tržní volatilita (beta) měří citlivost na pohyby celého trhu.\n"
                        f"Beta = 1.0 znamená, že portfolio plně kopíruje výkyvy trhu.\n\n"
-                       f"Vaše vážená Beta = {beta_val_str}.\n"
+                       f"Vaše vážená beta = {beta_val_str}.\n"
                        f"Při běžném krizovém propadu S&P 500 o 20 % by vaše portfolio\n"
                        f"mělo teoreticky klesnout o {beta_drop_str} %.")
         else:
@@ -3869,11 +3869,14 @@ class CzechInvestorApp:
             all_tickers_set.update(self.ledger.keys())
             for s in self.sales_history: all_tickers_set.add(s['ticker'])
             all_tickers = list(all_tickers_set)
-            
+
             if not all_tickers: return
             fx = self.get_fx_rates()
             
-            # 1. Paralelní stažení dividend (Velké zrychlení beze ztráty bezpečnosti)
+            # Vytvoření speciálního listu pro stahování, abychom nezanesli SPY do uživatelských dat
+            download_tickers = all_tickers + ["SPY"]
+            
+            # 1. Paralelní stažení dividend (velké zrychlení beze ztráty bezpečnosti)
             self.root.after(0, lambda: self.status_lbl.config(text="Stahuji dividendy...", fg="blue"))
             all_divs = {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
@@ -3887,7 +3890,7 @@ class CzechInvestorApp:
             current_year = datetime.now().year
             start_date = f"{current_year - 5}-01-01"
             
-            downloaded = self._safe_yf_download(all_tickers, start=start_date, auto_adjust=False)
+            downloaded = self._safe_yf_download(download_tickers, start=start_date, auto_adjust=False)
 
             # Kritická pojistka proti výpadku sítě
             if downloaded.empty or 'Close' not in downloaded:
@@ -3904,8 +3907,8 @@ class CzechInvestorApp:
                 c_raw = c_adj
 
             if isinstance(c_adj, pd.Series): 
-                c_adj = c_adj.to_frame(name=all_tickers[0])
-                c_raw = c_raw.to_frame(name=all_tickers[0])
+                c_adj = c_adj.to_frame(name=download_tickers[0])
+                c_raw = c_raw.to_frame(name=download_tickers[0])
                 
             # Finální fill chybějících víkendových dat (provádí se až nad kompletním 5letým blokem)
             adj_clean = c_adj.ffill().bfill()
@@ -4020,6 +4023,73 @@ class CzechInvestorApp:
                     # Pro tržní hodnotu reálného portfolia MUSÍME použít Raw Close (skutečné tehdejší ceny)
                     fx_val = fx.get(self.get_currency_for_ticker(t), 23.0)
                     real_portfolio_curve += qty_matrix[t] * hist_prices_raw[t] * p_factor * fx_val
+                    
+            # --- VÝPOČET S&P 500 BENCHMARKU (Stejné peněžní toky jako reálné portfolio) ---
+            spy_benchmark_curve = pd.Series(0.0, index=hist_prices_adj.index)
+            if "SPY" in hist_prices_adj.columns:
+                spy_qty_series = pd.Series(0.0, index=hist_prices_adj.index)
+                fx_usd = fx.get("USD", 23.0)
+                spy_prices = hist_prices_adj["SPY"] 
+
+                # Pomocná funkce pro bezpečné získání historické tržní ceny
+                def get_market_price(prices_df, ticker, dt):
+                    if ticker not in prices_df.columns: return 0.0
+                    series = prices_df[ticker]
+                    if dt in series.index: return series[dt]
+                    past = series[:dt]
+                    if not past.empty: return past.iloc[-1]
+                    return series.bfill().iloc[0]
+
+                # 1. Započítání nákupů, které aktuálně držíme
+                for t, lots in ledger_dt.items():
+                    curr = self.get_currency_for_ticker(t)
+                    fx_t = fx.get(curr, 23.0)
+                    p_factor = 0.01 if t.endswith(".L") else 1.0
+                    for lot in lots:
+                        dt = lot['date']
+                        
+                        # Vezmeme tržní cenu z Yahoo pro daný den (vyhneme se přepočtům britských
+                        # liber a pencí, které jsou zanesené v JSONu)
+                        stock_market_price = get_market_price(hist_prices_raw, t, dt)
+                        czk_val = lot['qty'] * stock_market_price * p_factor * fx_t
+                        
+                        spy_p = get_market_price(hist_prices_adj, "SPY", dt)
+                        if pd.notna(spy_p) and spy_p > 0:
+                            spy_shares = czk_val / (spy_p * fx_usd)
+                            if dt >= spy_qty_series.index[0]: spy_qty_series.loc[dt:] += spy_shares
+                            else: spy_qty_series.loc[:] += spy_shares
+
+                # 2. Započítání ukončených obchodů (Nákup i Prodej) z historie
+                for s in sales_dt:
+                    t = s['ticker']
+                    curr = s.get('currency', 'USD')
+                    fx_t = fx.get(curr, 23.0)
+                    p_factor = 0.01 if t.endswith(".L") else 1.0
+
+                    # Simulace nákupu SPY
+                    buy_dt = s['buy_date']
+                    stock_buy_p = get_market_price(hist_prices_raw, t, buy_dt)
+                    czk_buy_val = s['qty'] * stock_buy_p * p_factor * fx_t
+                    
+                    spy_buy_p = get_market_price(hist_prices_adj, "SPY", buy_dt)
+                    if pd.notna(spy_buy_p) and spy_buy_p > 0:
+                        spy_buy_shares = czk_buy_val / (spy_buy_p * fx_usd)
+                        if buy_dt >= spy_qty_series.index[0]: spy_qty_series.loc[buy_dt:] += spy_buy_shares
+                        else: spy_qty_series.loc[:] += spy_buy_shares
+
+                    # Simulace fiktivního prodeje SPY (výběr hotovosti z trhu)
+                    sell_dt = s['sell_date']
+                    stock_sell_p = get_market_price(hist_prices_raw, t, sell_dt)
+                    czk_sell_val = s['qty'] * stock_sell_p * p_factor * fx_t
+                    
+                    spy_sell_p = get_market_price(hist_prices_adj, "SPY", sell_dt)
+                    if pd.notna(spy_sell_p) and spy_sell_p > 0:
+                        spy_sell_shares = czk_sell_val / (spy_sell_p * fx_usd)
+                        if sell_dt >= spy_qty_series.index[0]: spy_qty_series.loc[sell_dt:] -= spy_sell_shares
+                        else: spy_qty_series.loc[:] -= spy_sell_shares
+
+                # Finální vynásobení nasbíraných kusů SPY aktuální cenou
+                spy_benchmark_curve = spy_qty_series * spy_prices * fx_usd
 
             # --- VYKRESLENÍ PRVNÍHO GRAFU (Čáry) ---
             self.ax1.clear()
@@ -4029,6 +4099,12 @@ class CzechInvestorApp:
                 self.ax1.plot(sim_curve[:first_buy_dt].index, sim_curve[:first_buy_dt].values, 
                               color='grey', linestyle='--', alpha=0.6, label="Simulace (hypotetická historie)")
                 
+                # Oranžová čára (Benchmark S&P 500)
+                if "SPY" in hist_prices_adj.columns:
+                    spy_data_to_plot = spy_benchmark_curve[spy_benchmark_curve.index >= first_buy_dt]
+                    self.ax1.plot(spy_data_to_plot.index, spy_data_to_plot.values, 
+                                  color='#F57F17', linestyle=':', linewidth=2, label="S&P 500 Benchmark (shodné peněžní toky)")
+
                 # Modrá čára (Realita) - skutečná hodnota portfolia od prvního nákupu
                 # Ořezáváme data před prvním nákupem, aby graf nezačínal na nule v roce 2021
                 real_data_to_plot = real_portfolio_curve[real_portfolio_curve.index >= first_buy_dt]
