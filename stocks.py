@@ -37,6 +37,11 @@ from yahooquery import Ticker as YQTicker
 
 PORTFOLIO_FILE = "portfolio_ledger.json"
 
+# Konstanty pro optimalizaci poplatků (IBKR Tiered Minimums)
+IBKR_MIN_FEE_USD = 0.35
+IBKR_MIN_FEE_GBP = 1.00
+DEFAULT_FEE_PERCENT = 0.5
+
 # Výchozí cílové váhy (TARGETS)
 # Reprezentují ideální rozložení kapitálu. Tyto hodnoty jsou v paměti přepsány,
 # pokud má uživatel uložené vlastní váhy v JSON souboru.
@@ -491,7 +496,8 @@ class CzechInvestorApp:
 
     def on_close(self):
         self.root.destroy()
-        sys.exit()
+        import os
+        os._exit(0)
 
     # --------------------------------------------------------------------------
     # PRÁCE S DATY A ÚLOŽIŠTĚM
@@ -534,6 +540,13 @@ class CzechInvestorApp:
                     self.custom_min_w = float(data.get("min_w", MIN_W))
                     self.custom_max_w = float(data.get("max_w", MAX_W))
                     self.real_dividends = data.get("real_dividends",[])
+
+                    # Načtení nastavení optimalizace poplatků
+                    self.fee_percent = float(data.get("fee_percent", 0.5))
+                    self.optimize_fees_enabled = data.get("optimize_fees_enabled", True)
+                    
+                    # Načtení nastavení řazení v Editoru (výchozí "metrics")
+                    self.editor_sort_mode = data.get("editor_sort_mode", "metrics")
                     
                     return ledger, history, rates
             except Exception as e: 
@@ -545,7 +558,7 @@ class CzechInvestorApp:
         return {t:[] for t in TARGETS},[], {}
 
     def save_data(self):
-        data = { 
+        data = {
             "targets": TARGETS,  
             "holdings": self.ledger, 
             "sales_history": self.sales_history, 
@@ -554,7 +567,10 @@ class CzechInvestorApp:
             "ethical_filters": getattr(self, 'ethical_filters', {k: True for k in TAGS}),
             "min_w": getattr(self, 'custom_min_w', MIN_W),
             "max_w": getattr(self, 'custom_max_w', MAX_W),
-            "real_dividends": getattr(self, 'real_dividends',[])
+            "real_dividends": getattr(self, 'real_dividends',[]),
+            "fee_percent": getattr(self, 'fee_percent', 0.5),
+            "optimize_fees_enabled": getattr(self, 'optimize_fees_enabled', True),
+            "editor_sort_mode": getattr(self, 'editor_sort_mode', 'metrics')
         }
         with open(PORTFOLIO_FILE, "w") as f: json.dump(data, f, indent=4)
 
@@ -975,7 +991,24 @@ class CzechInvestorApp:
         self.btn_calc_buys = tk.Button(top_bar, text="Spočítat návrh", command=self.start_calculate_buys, 
                   bg="#2E7D32", fg="white", font=("Arial", 12, "bold"))
         self.btn_calc_buys.pack(side=tk.LEFT, padx=20)
-                  
+        
+        # --- Ovládací prvky pro optimalizaci poplatků ---
+        self.opt_fee_var = tk.BooleanVar(value=getattr(self, 'optimize_fees_enabled', True))
+        self.opt_fee_checkbox = tk.Checkbutton(top_bar, text="Optimalizovat poplatky pro typ účtu IBKR Pro Tiered", variable=self.opt_fee_var, 
+                       font=("Arial", 12), bg="#f0f2f5", 
+                       command=self._on_fee_opt_change)
+        self.opt_fee_checkbox.pack(side=tk.LEFT, padx=(20, 5))
+        
+        tk.Label(top_bar, text="Max poplatek:", font=("Arial", 12), bg="#f0f2f5").pack(side=tk.LEFT)
+        self.fee_entry = tk.Entry(top_bar, font=("Arial", 12), width=5, justify="center")
+        self.fee_entry.pack(side=tk.LEFT, padx=5)
+        self.fee_entry.insert(0, str(getattr(self, 'fee_percent', DEFAULT_FEE_PERCENT)).replace('.', ','))
+        
+        # Automatický přepočet i při stisku Enter uvnitř políčka pro procenta
+        self.fee_entry.bind("<Return>", self._on_fee_opt_change)
+
+        tk.Label(top_bar, text="%", font=("Arial", 12), bg="#f0f2f5").pack(side=tk.LEFT)
+
         tree_container = tk.Frame(calc_frame, bg="#f0f2f5")
         tree_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
 
@@ -1058,9 +1091,30 @@ class CzechInvestorApp:
                   
         self.planner_loading_state = self._create_loading_card(main_frame)
 
+    def _on_fee_opt_change(self, event=None):
+        """Spustí automatický přepočet nákupů při změně nastavení poplatků."""
+        # 1. Uložíme aktuální stav do paměti
+        try:
+            self.fee_percent = float(self.fee_entry.get().replace(',', '.'))
+        except ValueError:
+            self.fee_percent = DEFAULT_FEE_PERCENT
+        self.optimize_fees_enabled = self.opt_fee_var.get()
+        
+        # 2. Uložíme do JSONu
+        self.save_data()
+        
+        # 3. Spustíme přepočet
+        if self.buy_tree.get_children() and self.btn_calc_buys['state'] == tk.NORMAL:
+            self.start_calculate_buys()
+
     def start_calculate_buys(self):
-        """Příprava před výpočtem - zamkne tlačítko a vyčistí tabulku v hlavním vlákně."""
+        """Příprava před výpočtem - zamkne tlačítka a vyčistí tabulku v hlavním vlákně."""
         self.btn_calc_buys.config(state=tk.DISABLED)
+        
+        # Zamknutí prvků pro optimalizaci poplatků
+        if hasattr(self, 'opt_fee_checkbox'): self.opt_fee_checkbox.config(state=tk.DISABLED)
+        if hasattr(self, 'fee_entry'): self.fee_entry.config(state=tk.DISABLED)
+        
         for i in self.buy_tree.get_children(): self.buy_tree.delete(i)
         
         # Nastavení časovače pro zobrazení animace ozubených kol (pokud to trvá déle než 2 vteřiny)
@@ -1110,65 +1164,129 @@ class CzechInvestorApp:
                 except Exception:
                     current_holdings_val[t] = 0
 
-            # Ignorování nulových vah, abychom předešli dělení nulou
-            valid_targets =[w for w in TARGETS.values() if w > 0]
+            # OPTIMALIZACE POPLATKŮ
+            valid_targets = [w for w in TARGETS.values() if w > 0]
             min_target = min(valid_targets) if valid_targets else 1.0
             
-            low = 0.0
-            high = (total_current_portfolio_val + invest) / min_target 
-            virtual_total = 0.0
+            # 1. Získání limitů pro poplatky z UI
+            optimize_fees = self.opt_fee_var.get()
+            try:
+                max_fee_pct = float(self.fee_entry.get().replace(',', '.')) / 100.0
+            except ValueError:
+                max_fee_pct = 0.005 # Fallback 0.5%
             
-            for _ in range(50):
-                mid = (low + high) / 2.0
-                required_cash = 0.0
+            # Výpočet minimální investice (MTS - Minimum Trade Size) pro každý ticker
+            mts_czk = {}
+            for t in all_tickers:
+                cur = self.get_currency_for_ticker(t)
+                fx_rate = fx.get(cur, 1.0)
+                if cur == "GBP":
+                    mts_czk[t] = (IBKR_MIN_FEE_GBP / max_fee_pct) * fx_rate
+                else:
+                    mts_czk[t] = (IBKR_MIN_FEE_USD / max_fee_pct) * fx_rate
+            
+            banned_from_buy = set()
+            final_allocations_czk = {t: 0.0 for t in all_tickers}
+            
+            # 2. Iterativní Water Filling (až N-krát vyloučí nejmenší nevalidní nákup)
+            for _ in range(len(all_tickers) + 1):
+                low = 0.0
+                high = (total_current_portfolio_val + invest) / min_target 
+                virtual_total = 0.0
+                
+                # Binární hledání
+                for _ in range(50):
+                    mid = (low + high) / 2.0
+                    required_cash = 0.0
+                    for t, target in TARGETS.items():
+                        if t in banned_from_buy: continue # Tuto akcii už nenakupujeme
+                        ideal_val = mid * target
+                        curr_val = current_holdings_val.get(t, 0.0)
+                        if ideal_val > curr_val:
+                            required_cash += (ideal_val - curr_val)
+                            
+                    if required_cash > invest: high = mid
+                    else: low = mid; virtual_total = mid
+                
+                # Zjištění alokací z nalezeného virtual_total
+                temp_allocs = {}
                 for t, target in TARGETS.items():
-                    ideal_val = mid * target
-                    curr_val = current_holdings_val.get(t, 0.0)
-                    if ideal_val > curr_val:
-                        required_cash += (ideal_val - curr_val)
+                    if t in banned_from_buy:
+                        temp_allocs[t] = 0.0
+                    else:
+                        ideal_val = virtual_total * target
+                        curr_val = current_holdings_val.get(t, 0.0)
+                        temp_allocs[t] = max(0.0, ideal_val - curr_val)
                         
-                if required_cash > invest: high = mid
-                else: low = mid; virtual_total = mid
+                if not optimize_fees:
+                    final_allocations_czk = temp_allocs
+                    break
+                    
+                # 3. Kontrola limitů poplatků (hledáme nejhoršího hříšníka)
+                violation_found = False
+                worst_violation_t = None
+                worst_violation_score = -float('inf')
+                
+                for t, alloc in temp_allocs.items():
+                    # Drobná tolerance 0.1 CZK kvůli float nepřesnostem
+                    if 0.1 < alloc < mts_czk[t]:
+                        violation_found = True
+                        
+                        # Počítáme absolutní chybějící částku (shortfall).
+                        # Tím se přednostně vyřadí akcie (typicky UK), které by k dosažení
+                        # minimálního poplatku vyžadovaly "doplatit" nejvíce peněz.
+                        shortfall = mts_czk[t] - alloc
+                        
+                        if shortfall > worst_violation_score:
+                            worst_violation_score = shortfall
+                            worst_violation_t = t
+                            
+                # Pokud existuje porušení, vyloučíme "nejslabší článek" a jedeme další kolo.
+                if violation_found:
+                    banned_from_buy.add(worst_violation_t)
+                else:
+                    final_allocations_czk = temp_allocs
+                    break
 
             # Skutečná hodnota portfolia po zainvestování vložené částky
             projected_total_val = total_current_portfolio_val + invest
 
-            rows_to_insert = []
-            excess_data_temp = {} # Slovník pro ukládání nadbytků
+            raw_rows_data = []
+            info_data_temp = {} 
             
+            # 4. Formátování řádků pro UI
             for t, target in TARGETS.items():
                 if target <= 0: continue
                 
                 try:
-                    cur = CURRENCIES.get(t, "USD")
+                    cur = self.get_currency_for_ticker(t)
                     price = float(prices_data[t])
                     fx_rate = fx.get(cur, 1.0)
                     if t.endswith(".L"): price /= 100.0
                     price_in_czk = price * fx_rate
 
-                    ideal_val = virtual_total * target
-                    curr_val = current_holdings_val.get(t, 0.0)
-                    czk_alloc = max(0.0, ideal_val - curr_val)
+                    czk_alloc = final_allocations_czk.get(t, 0.0)
                     qty = czk_alloc / price_in_czk if price_in_czk > 0 else 0.0
 
                     if qty < 0.001:
                         qty = 0.0
                         czk_alloc = 0.0
                         
-                        # Výpočet, o kolik je akcie převážená
-                        # Místo interní proměnné ideal_val použijeme reálný cílový stav
+                        curr_val = current_holdings_val.get(t, 0.0)
                         true_ideal_val = projected_total_val * target
                         excess_czk = curr_val - true_ideal_val
                         
-                        # Zobrazíme nadbytek jen pokud je skutečně v plusu (ignorujeme drobné odchylky do 50 Kč)
-                        if excess_czk > 50 and price_in_czk > 0:
+                        # Přiřazení správného důvodu pro Tooltip (Poplatky vs. Běžný nadbytek)
+                        if t in banned_from_buy:
+                            info_data_temp[t] = {"type": "fee", "min_req": mts_czk[t], "currency": cur}
+                        elif excess_czk > 50 and price_in_czk > 0:
                             excess_qty = excess_czk / price_in_czk
-                            excess_data_temp[t] = (excess_qty, excess_czk)
+                            info_data_temp[t] = {"type": "excess", "qty": excess_qty, "czk": excess_czk}
 
                     qty_rounded = round(qty, 3)
                     orig_val = qty_rounded * price
                     
-                    rows_to_insert.append((
+                    row_tuple = (
                         t, 
                         f"{target:.1%}".replace('.', ','), 
                         f"{price:.2f}".replace('.', ','), 
@@ -1176,11 +1294,18 @@ class CzechInvestorApp:
                         f"{czk_alloc:.0f}",
                         f"{orig_val:.2f}".replace('.', ','), 
                         f"» {str(qty_rounded).replace('.', ',')} «"
-                    ))
+                    )
+                    
+                    # Uložíme i s číselnou alokací, abychom podle ní mohli řadit
+                    raw_rows_data.append((czk_alloc, row_tuple))
                 except Exception as e: print(f"Skipping {t}: {e}")
 
+            # 5. Seřazení: od největšího nákupu po nejmenší (ty s 0 jsou na konci)
+            raw_rows_data.sort(key=lambda x: x[0], reverse=True)
+            rows_to_insert = [r[1] for r in raw_rows_data]
+
             # Bezpečný zápis do UI z hlavního vlákna (bezpečné pro Tkinter)
-            self.root.after(0, lambda r=rows_to_insert, e=excess_data_temp: self._populate_buy_tree(r, e))
+            self.root.after(0, lambda r=rows_to_insert, i=info_data_temp: self._populate_buy_tree(r, i))
 
         finally:
             # Garantované odemčení a skrytí loading animace (provedeno v hlavním vlákně)
@@ -1193,14 +1318,18 @@ class CzechInvestorApp:
             self.planner_loading_timer = None
         self.hide_loading(self.planner_loading_state)
         self.btn_calc_buys.config(state=tk.NORMAL)
+        
+        # Odemknutí prvků pro optimalizaci poplatků
+        if hasattr(self, 'opt_fee_checkbox'): self.opt_fee_checkbox.config(state=tk.NORMAL)
+        if hasattr(self, 'fee_entry'): self.fee_entry.config(state=tk.NORMAL)
 
-    def _populate_buy_tree(self, rows, excess_data=None):
+    def _populate_buy_tree(self, rows, info_data=None):
         """Pomocná metoda pro bezpečné vypsání dat do tabulky v UI vlákně."""
-        # Uložení informace o nadbytku pro Tooltipy
-        if excess_data is not None:
-            self._buy_excess_data = excess_data
+        # Uložení doplňujících informací (pro Tooltipy)
+        if info_data is not None:
+            self._buy_info_data = info_data
         else:
-            self._buy_excess_data = {}
+            self._buy_info_data = {}
             
         for row in rows:
             self.buy_tree.insert("", "end", values=row)
@@ -1226,23 +1355,16 @@ class CzechInvestorApp:
         self.real_price.insert(0, clean_price)
 
     def _on_buy_tree_hover(self, event):
-        """Zobrazí tooltip, pokud myš najede na řádek s akcií, která se nekupuje (má nadbytek)."""
-        # Zjištění, nad kterým řádkem myš právě je
+        """Zobrazí tooltip s dodatečnými informacemi (nadbytek nebo poplatky)."""
         item = self.buy_tree.identify_row(event.y)
-        
-        # Pokud jsme mimo řádky
         if not item:
             self._last_hovered_buy_item = None
             self._hide_tooltip()
             return
             
-        # Pokud se myš hýbe v rámci stejného řádku, nepřekreslujeme (zamezí blikání)
-        if item == getattr(self, '_last_hovered_buy_item', None):
-            return
-            
+        if item == getattr(self, '_last_hovered_buy_item', None): return
         self._last_hovered_buy_item = item
         
-        # Načtení hodnot z daného řádku
         values = self.buy_tree.item(item, "values")
         if not values:
             self._hide_tooltip()
@@ -1250,18 +1372,21 @@ class CzechInvestorApp:
             
         ticker = str(values[0])
         
-        # Pokud je ticker ve slovníku nadbytků, ukážeme tooltip
-        if hasattr(self, '_buy_excess_data') and ticker in self._buy_excess_data:
-            # Rozbalíme obě uložené hodnoty
-            excess_qty, excess_czk = self._buy_excess_data[ticker]
+        if hasattr(self, '_buy_info_data') and ticker in self._buy_info_data:
+            info = self._buy_info_data[ticker]
             
-            # Naformátování čísel (čárky pro desetinná místa a mezery pro tisíce u CZK)
-            excess_str = f"{excess_qty:.3f}".replace('.', ',')
-            czk_str = f"{excess_czk:,.0f} Kč".replace(',', ' ')
-            
-            # Použijeme stávající tooltip systém
-            msg = f"{ticker}\nℹ️ Nadbytek v portfoliu:\nDržíte o {excess_str} ks více,\nnež odpovídá cílové váze\n(Hodnota nadbytku: {czk_str})."
-            self._show_tooltip(msg)
+            if info["type"] == "excess":
+                excess_str = f"{info['qty']:.3f}".replace('.', ',')
+                czk_str = f"{info['czk']:,.0f} Kč".replace(',', ' ')
+                msg = f"{ticker}\nℹ️ Nadbytek v portfoliu:\nDržíte o {excess_str} ks více,\nnež odpovídá cílové váze\n(Hodnota nadbytku: {czk_str})."
+                self._show_tooltip(msg)
+                
+            elif info["type"] == "fee":
+                min_req = f"{info['min_req']:,.0f} Kč".replace(',', ' ')
+                cur = info['currency']
+                fee_val = IBKR_MIN_FEE_GBP if cur == "GBP" else IBKR_MIN_FEE_USD
+                msg = f"{ticker}\n⚠️ Nákup zrušen kvůli poplatkům:\nAkcie je sice podvážená, ale aby\npoplatek ({fee_val} {cur}) nepřesáhl váš limit,\nmuseli byste nakoupit alespoň za {min_req}.\nPeníze byly přesunuty na další akcie."
+                self._show_tooltip(msg)
         else:
             self._hide_tooltip()
 
@@ -2660,7 +2785,7 @@ class CzechInvestorApp:
         
         self.tuner_vars = {}
         self.tuner_checkboxes =[] # Uložení referencí na checkboxy
-        tickers = list(TARGETS.keys())
+        tickers = sorted(list(TARGETS.keys()))
         for i, t in enumerate(tickers):
             var = tk.BooleanVar(value=True) 
             self.tuner_vars[t] = var
@@ -3403,7 +3528,8 @@ class CzechInvestorApp:
                 rate_div_contribution += w * stock_yield
                 # Výpočet procentuálního poklesu hodnot citlivých akcií (typický pokles o 15 %, vážený betou)
                 # REITs a BDCs jsou extrémně citlivé, doporučený multiplikátor 1.0 - 1.2
-                beta_adj = self.tuner_fundamentals[t].get("beta", 1.0)
+                beta_adj = self.tuner_fundamentals[t].get("beta")
+                beta_adj = 1.0 if beta_adj is None else beta_adj
                 rate_sensitive_total_drop_pct += w * (0.15 * max(1.0, beta_adj))
                 
             if hasattr(self, 'tuner_fundamentals') and t in self.tuner_fundamentals:
@@ -4103,7 +4229,7 @@ class CzechInvestorApp:
                 if "SPY" in hist_prices_adj.columns:
                     spy_data_to_plot = spy_benchmark_curve[spy_benchmark_curve.index >= first_buy_dt]
                     self.ax1.plot(spy_data_to_plot.index, spy_data_to_plot.values, 
-                                  color='#F57F17', linestyle=':', linewidth=2, label="S&P 500 Benchmark (shodné peněžní toky)")
+                                  color='#F57F17', linestyle='--', linewidth=1, label="S&P 500 Benchmark (shodné peněžní toky)")
 
                 # Modrá čára (Realita) - skutečná hodnota portfolia od prvního nákupu
                 # Ořezáváme data před prvním nákupem, aby graf nezačínal na nule v roce 2021
@@ -4901,6 +5027,22 @@ class CzechInvestorApp:
             cb.grid(row=idx//2, column=idx%2, sticky="w", padx=10)
             idx += 1
             
+        # Inicializace proměnné pro režim řazení z načtených dat
+        self.sort_mode_var = tk.StringVar(value=getattr(self, 'editor_sort_mode', 'metrics'))
+
+        # Rámeček pro výběr řazení
+        sort_frame = tk.Frame(left_frame)
+        sort_frame.pack(fill=tk.X, pady=(5, 10))
+        tk.Label(sort_frame, text="Řazení seznamů:", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=(0, 10))
+        
+        rb_metrics = tk.Radiobutton(sort_frame, text="Podle výkonu", variable=self.sort_mode_var, value="metrics", font=("Arial", 11),
+                                    command=lambda: self._on_editor_sort_change(list_available, list_current, filter_vars))
+        rb_metrics.pack(side=tk.LEFT, padx=5)
+        
+        rb_alpha = tk.Radiobutton(sort_frame, text="Abecedně", variable=self.sort_mode_var, value="alpha", font=("Arial", 11),
+                                  command=lambda: self._on_editor_sort_change(list_available, list_current, filter_vars))
+        rb_alpha.pack(side=tk.LEFT, padx=5)            
+            
         avail_container = tk.Frame(left_frame)
         avail_container.pack(fill=tk.BOTH, expand=True, pady=5)
         
@@ -4983,6 +5125,12 @@ class CzechInvestorApp:
 
         self._refresh_lists(list_available, list_current, filter_vars)
 
+    def _on_editor_sort_change(self, list_avail, list_curr, filter_vars):
+        """Uloží preferenci řazení do JSONu a okamžitě aktualizuje seznamy."""
+        self.editor_sort_mode = self.sort_mode_var.get()
+        self.save_data()
+        self._refresh_lists(list_avail, list_curr, filter_vars)
+        
     def _get_bar_visual(self, val, max_val, char="█"):
         if val is None: return ".........."
         normalized = max(0, min(val, max_val)) / max_val
@@ -5038,12 +5186,21 @@ class CzechInvestorApp:
             growth_bucket = int(np.clip(raw_growth / (GROWTH_SCALE / 5), -5, 5))
             return (growth_bucket, raw_yield)
 
+        # Určení zvoleného řazení
+        sort_mode = getattr(self, "sort_mode_var", None)
+        mode = sort_mode.get() if sort_mode else "metrics"
+
         # Naplnění pravého seznamu (Moje)
         my_items = []
         for t in current_tickers:
             meta = self.stock_db.get(t, {"name": "Unknown", "tags":[], "growth": 0, "yield": 0})
             my_items.append((t, meta))
-        my_items.sort(key=sort_key, reverse=True)
+        
+        if mode == "alpha":
+            my_items.sort(key=lambda item: item[0])  # Seřadí abecedně podle tickeru
+        else:
+            my_items.sort(key=sort_key, reverse=True) # Původní řazení podle metrik
+            
         for t, meta in my_items:
             l_curr.insert(tk.END, format_row(t, meta))
             is_violation = False
@@ -5062,7 +5219,12 @@ class CzechInvestorApp:
                     skip = True; break
             if skip: continue
             avail_items.append((t, meta))
-        avail_items.sort(key=sort_key, reverse=True)
+            
+        if mode == "alpha":
+            avail_items.sort(key=lambda item: item[0])  # Seřadí abecedně podle tickeru
+        else:
+            avail_items.sort(key=sort_key, reverse=True) # Původní řazení podle metrik
+            
         for t, meta in avail_items:
             l_avail.insert(tk.END, format_row(t, meta))
             
