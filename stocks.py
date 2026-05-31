@@ -79,6 +79,7 @@ CURRENCIES = {
     "JNJ": "USD", "NEE": "USD", "PEP": "USD", "CAT": "USD", "AAPL": "USD",
     "O": "USD", "ABBV": "USD", "MAIN": "USD", "HTGC": "USD", "ARCC": "USD", 
     "OHI": "USD", "AVGO": "USD", "MRK": "USD", "LLY": "USD", "PWR": "USD",
+    "TT": "USD", "ETN": "USD", "MU": "USD", "FDUS": "USD", "TRIN": "USD", "SBRA": "USD"
 }
 
 # Pravidla pro hodnocení "zdraví" portfolia (použito v Editoru akcií)
