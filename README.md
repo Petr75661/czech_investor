@@ -41,7 +41,9 @@ Zcela unikátní dvouproudá optimalizace (Minulost vs. Budoucnost).
 * **Daňová brzda:** Grafy automaticky vizualizují ztrátu na složeném úročení způsobenou srážkovou 15% daní z dividend pro férové srovnání s ETF.
 
 ### 🏦 Správa Ledgeru (FIFO)
-Striktní evidence nákupů a prodejů s respektem k lokální legislativě.
+Striktní evidence nákupů a prodejů s respektem k lokální legislativě a poplatkům.
+* **IBKR Import (activity statement):** Načtěte CSV od brokera Interactive Brokers a aplikace automaticky spáruje všechny nákupy, zaznamená prodeje metodou FIFO, načte přijaté dividendy (včetně srážkových daní) a provede hloubkový audit vašich otevřených pozic.
+* **Optimalizace poplatků brokera:** Algoritmus při nákupu hlídá "minimum trade size" (např. IBKR Tiered minimum 0.35 USD / 1.00 GBP) a brání nesmyslným mikro-nákupům, které by spolkly velké procento na poplatcích.
 * **Časový test:** Automatické hlídání 3letého limitu pro osvobození prodejů od daně v ČR (včetně přestupných let).
 * **FIFO algoritmus:** Přesný a legislativně korektní odečet kusů od nejstarších lotů.
 * **Měnové kurzy:** Samostatný scrapovací robot stahuje aktuální "jednotné kurzy" vyhlášené Ministerstvem financí.
@@ -56,21 +58,25 @@ Konec ručního vyplňování a počítání britských pencí.
 
 ## 3. Investiční logika a rizika
 
-Výchozí nastavení databáze je koncipováno jako **"all-weather dividend growth"** strategie kombinující to nejlepší z amerického růstu, silného britského cash-flow a defenzivních králů trhu.
+Výchozí nastavení databáze obsahuje pokročilé portfolio o 24 pozicích. Jde o
+maximálně diverzifikovanou **"All-Weather Dividend Growth"** strategii kombinující
+americký technologický růst, průmyslové giganty a masivní britsko-americké
+cash-flow.
 
 ### Charakteristika výchozího mixu
 
 | Segment | Vlastnosti | Zastoupené tituly |
 | :--- | :--- | :--- |
-| **Technologický růst** | Kombinace inovací a navyšování dividend. | `AAPL`, `AVGO` |
-| **Defenzivní stabilita** | Odolnost v recesi, dlouhodobě rostoucí výplaty. | `JNJ`, `ABBV`, `PEP`, `ULVR.L`, `MRK`, `LLY` |
-| **Vysoký cash-flow** | BDC a REIT tituly s masivním výnosem (6–10 %). | `MAIN`, `ARCC`, `HTGC`, `OHI`, `O` |
-| **Infrastruktura a průmysl** | Cyklická síla a regulované utility s fixním výnosem. | `CAT`, `TRIG.L`, `NEE`, `PWR` |
-| **Zahraniční diverzifikace** | Expozice vůči britské libře (GBP) a britskému trhu. | `LGEN.L` |
+| **Technologický růst** | Kombinace inovací a navyšování dividend. | `AAPL`, `AVGO`, `MU` |
+| **Průmysl a Infrastruktura** | Cyklická síla a regulované utility.       | `CAT`, `TT`, `ETN`, `PWR`, `NEE`, `TRIG.L`   |
+| **Defenzivní stabilita**     | Odolnost v recesi, zdraví a spotřeba.     | `JNJ`, `ABBV`, `PEP`, `ULVR.L`, `MRK`, `LLY` |
+| **Vysoké cash-flow (BDC)**   | Úvěry středním firmám s masivním výnosem. | `MAIN`, `ARCC`, `HTGC`, `TRIN`, `FDUS`       |
+| **Reality (REITs)**          | Pronájem nemovitostí a zdravotnická péče. | `O`, `OHI`, `SBRA`                           |
+| **Zahraniční diverzifikace** | Expozice na britský finanční trh (v GBP). | `LGEN.L`                                     |
 
 > [!WARNING]
 > **INVESTIČNÍ RIZIKA:**
-> * **Koncentrace v BDC:** Tituly jako ARCC, MAIN a HTGC jsou citlivé na úrokové sazby a stav ekonomiky USA, což může způsobit vyšší volatilitu NAV (čisté hodnoty aktiv).
+> * **Úrokové riziko:** Sektory REIT, BDC a Utilities spoléhají na cizí kapitál a mohou prudce klesat při nečekaném růstu úrokových sazeb centrálních bank.
 > * **Měnové riziko:** Investujete v cizích měnách. Posílení CZK vůči USD/GBP technicky snižuje hodnotu vašeho portfolia v korunách, i když akcie samotné rostou.
 > * **Závislost na datech:** Aplikace využívá dvě různá API (yfinance a yahooquery), čímž je chráněna proti dočasným výpadkům a rate-limitům. I tak ale může případný globální a dlouhodobý výpadek serverů omezit některé analytické funkce.
 > * **Sektorová rizika:** Portfolio obsahuje specifické sektory (REITs, BDC, utilities), které podléhají jiným daňovým a regulačním pravidlům než běžné korporátní akcie.

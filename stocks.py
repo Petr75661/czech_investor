@@ -45,46 +45,32 @@ DEFAULT_FEE_PERCENT = 0.5
 # Výchozí cílové váhy (TARGETS)
 # Reprezentují ideální rozložení kapitálu. Tyto hodnoty jsou v paměti přepsány,
 # pokud má uživatel uložené vlastní váhy v JSON souboru.
-TARGETS = {
-    # Britská část
-    "LGEN.L": 0.0962904534140656,   # Legal & General - High Yield
-    "ULVR.L": 0.04339500794232023,  # Unilever - Defensive Staples
-    "TRIG.L": 0.09496151355735824,  # Renewables Infrastructure - Income
-
-    # Americká část
-    "JNJ":    0.04223442407449506,  # Johnson & Johnson - Core Healthcare
-    "NEE":    0.04164047745742633,  # NextEra - Green Utility Growth
-    "PEP":    0.05009304221313858,  # PepsiCo - Resilient Staples
-    "CAT":    0.054606034730671396, # Industrial/Cyclical Growth
-    "AAPL":   0.04502803530977044,  # Technology/Quality Growth
-    "O":      0.042072155640151904, # Reality
-    "ABBV":   0.05092109039456007,  # Farmaceutický gigant
-    "MAIN":   0.09148972366558898,  # Business Development Company (úvěry firmám)
-    "ARCC":   0.08648783099862456,  # BDC fond
-    "OHI":    0.08808725857018594,  # Zdravotnický REIT (domovy s pečovatelskou službou)
-    "AVGO":   0.09011472979451929,  # Broadcom
-    "MRK":    0.08257822223712338,  # Merck - biotechnologie
-}
 # Výchozí cílové váhy (TARGETS)
 TARGETS = {
     "LGEN.L": 0.06,     # Legal & General - High Yield
-    "ULVR.L": 0.042,    # Unilever - Defensive Staples
-    "TRIG.L": 0.09,     # Renewables Infrastructure - Income
-    "JNJ":    0.042,    # Johnson & Johnson - Core Healthcare
-    "NEE":    0.042,    # NextEra - Green Utility Growth
+    "ULVR.L": 0.035,    # Unilever - Defensive Staples
+    "TRIG.L": 0.08,     # Renewables Infrastructure - Income
+    "JNJ":    0.04,     # Johnson & Johnson - Core Healthcare
+    "NEE":    0.04,     # NextEra - Green Utility Growth
     "PEP":    0.042,    # PepsiCo - Resilient Staples
-    "CAT":    0.055,    # Industrial/Cyclical Growth
+    "CAT":    0.025,    # Industrial/Cyclical Growth
+    "TT":     0.025,    # Trane Technologies - Industrials
+    "ETN":    0.024,    # Eaton Corporation - Industrials
     "AAPL":   0.05,     # Technology/Quality Growth
-    "O":      0.042,    # Reality
-    "ABBV":   0.042,    # Farmaceutický gigant
-    "MAIN":   0.08,     # Business Development Company (úvěry firmám)
-    "HTGC":   0.035,    # BDC fond
-    "OHI":    0.078,    # Zdravotnický REIT (domovy s pečovatelskou službou)
-    "AVGO":   0.09,     # Broadcom
-    "MRK":    0.042,    # Merck - biotechnologie
-    "ARCC":   0.08,     # Business Development Company (úvěry firmám)
-    "LLY":    0.046,    # Eli Lilly and Company - human pharmaceutical products
-    "PWR":    0.042,    # Quanta - power utility
+    "O":      0.042,    # Realty Income
+    "ABBV":   0.053,    # Farmaceutický gigant
+    "MAIN":   0.039,    # BDC
+    "HTGC":   0.035,    # BDC
+    "ARCC":   0.039,    # BDC
+    "TRIN":   0.039,    # Trinity Capital - BDC
+    "FDUS":   0.039,    # Fidus Investment - BDC
+    "OHI":    0.035,    # Zdravotnický REIT
+    "SBRA":   0.035,    # Sabra Health Care - REIT
+    "AVGO":   0.073,    # Broadcom
+    "MU":     0.025,    # Micron Technology
+    "MRK":    0.04,     # Merck - biotechnologie
+    "LLY":    0.06,     # Eli Lilly
+    "PWR":    0.025     # Quanta - power utility
 }
 
 # Měny jednotlivých titulů pro správný výpočet FX (převodů měn)
@@ -102,7 +88,7 @@ LIMITS = {
     "MAX_SECTOR_WEIGHT": 0.35,   
     "MAX_RATE_SENSITIVE_WEIGHT": 0.30, # Max podíl firem citlivých na sazby (REIT, BDC, Utility)
     "MIN_POSITIONS": 8,
-    "MAX_POSITIONS": 25,
+    "MAX_POSITIONS": 40,
     "MIN_GROWTH_RATIO": 0.25,     
     "MIN_YIELD_RATIO": 0.40
 }
@@ -126,6 +112,9 @@ DEFAULT_STOCK_DB = {
     "TXN":    {"name": "Texas Instruments", "sector": "Technology", "tags":[], "yield": 2.8, "growth": 15.0},
     "NVDA":   {"name": "NVIDIA Corp.", "sector": "Technology", "tags": ["AI_BUBBLE"], "yield": 0.03, "growth": 250.0},
     "GOOGL":  {"name": "Alphabet Inc.", "sector": "Technology", "tags": ["AI_BUBBLE"], "yield": 0.0, "growth": 40.0},
+    "TT":     {"name": "Trane Technologies plc", "sector": "Industrial", "tags": [], "yield": 0.86, "growth": 64.0},
+    "ETN":    {"name": "Eaton Corporation", "sector": "Industrial", "tags": [], "yield": 1.04, "growth": 31.3},
+    "MU":     {"name": "Micron Technology", "sector": "Technology", "tags": ["AI_BUBBLE"], "yield": 0.11, "growth": 374.7},
     
     # -- ZDRAVOTNICTVÍ --
     "JNJ":    {"name": "Johnson & Johnson", "sector": "Healthcare", "tags":[], "yield": 3.0, "growth": -5.0},
@@ -149,12 +138,15 @@ DEFAULT_STOCK_DB = {
     "LGEN.L": {"name": "Legal & General", "sector": "Financial", "tags":[], "yield": 8.5, "growth": -5.0},
     "MNG.L":  {"name": "M&G PLC", "sector": "Financial", "tags":[], "yield": 9.5, "growth": 2.0},
     "JPM":    {"name": "JPMorgan Chase", "sector": "Financial", "tags":[], "yield": 2.3, "growth": 45.0},
+    "FDUS":   {"name": "Fidus Investment", "sector": "Financial", "tags": [], "yield": 11.69, "growth": 17.3},
+    "TRIN":   {"name": "Trinity Capital", "sector": "Financial", "tags": [], "yield": 12.1, "growth": 53.2},
 
     # -- REALITY (REITs) --
     "O":      {"name": "Realty Income", "sector": "Real Estate", "tags":[], "yield": 5.5, "growth": -12.0},
     "OHI":    {"name": "Omega Healthcare", "sector": "Real Estate", "tags":[], "yield": 8.5, "growth": 10.0},
     "VICI":   {"name": "VICI Properties", "sector": "Real Estate", "tags": ["CASINO"], "yield": 5.8, "growth": 5.0},
     "WPC":    {"name": "W. P. Carey", "sector": "Real Estate", "tags":[], "yield": 6.2, "growth": -15.0},
+    "SBRA":   {"name": "Sabra Health Care REIT", "sector": "Real Estate", "tags": [], "yield": 6.04, "growth": 57.9},
 
     # -- PRŮMYSL & INFRASTRUKTURA --
     "CAT":    {"name": "Caterpillar Inc.", "sector": "Industrial", "tags":[], "yield": 1.6, "growth": 60.0},
@@ -170,7 +162,6 @@ DEFAULT_STOCK_DB = {
     "SHEL.L": {"name": "Shell PLC", "sector": "Energy", "tags": ["FOSSIL"], "yield": 4.0, "growth": 15.0},
 
     # -- ETF SEKTOR (UCITS VARIANTY PRO ČESKÉHO INVESTORA) --
-    # Přidán klíč "country": "UK" pro správné daňové škatulkování v PDF a XML
     "VUSA.L": {"name": "Vanguard S&P 500 (Dist)", "sector": "ETF", "tags": [], "yield": 1.2, "growth": 30.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
     "CSPX.L": {"name": "iShares Core S&P 500 (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 31.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
     "VWRL.L": {"name": "Vanguard All-World (Dist)", "sector": "ETF", "tags": [], "yield": 1.6, "growth": 20.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
@@ -180,21 +171,20 @@ DEFAULT_STOCK_DB = {
     "CNDX.L": {"name": "iShares NASDAQ 100 (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 56.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
     "IWDP.L": {"name": "iShares Global REITs (Dist)", "sector": "ETF", "tags": [], "yield": 3.8, "growth": 2.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
 }
-
 # Seznam tickerů pro účely výpočtu úrokového rizika (REITs, BDCs, Utility)
 # Rozšiřitelný seznam, který aplikace použije pro Stress Test
 INTEREST_RATE_SENSITIVE_TICKERS = {
     # BDC (Business Development Companies)
-    "MAIN", "HTGC", "ARCC", "OBDC", "BXSL", "CSWC", "GBDC", "FSK", "TSLX", "TRIN", "PSEC", "OCSL", "GSBD",
+    "MAIN", "HTGC", "ARCC", "OBDC", "BXSL", "CSWC", "GBDC", "FSK", "TSLX", "TRIN", "FDUS", "PSEC", "OCSL", "GSBD",
     # REITs (Real Estate Investment Trusts) - nejznámější
-    "O", "VICI", "WPC", "AMT", "PLD", "CCI", "SPG", "PSA", "DLR", "EQIX", "WELL", "VTR", "AVB", "INVH",
+    "O", "VICI", "WPC", "AMT", "PLD", "CCI", "SPG", "PSA", "DLR", "EQIX", "WELL", "VTR", "AVB", "INVH", "OHI", "SBRA",
     # Utility (Infrastruktura s vysokým dluhem)
     "NEE", "TRIG.L", "PWR", "DUK", "SO", "NG.L", "SSE.L"
 }
 
 # Parametry pro Monte Carlo tuning portfolia
-MIN_W = 0.04
-MAX_W = 0.1
+MIN_W = 0.024
+MAX_W = 0.08
 EPS = 0.001
 ENFORCEMENT_W = 0.5  # Důraz na trefení čísla na slideru
 STABILITY_W = 0.5    # Důraz na minimální změnu existujících vah
