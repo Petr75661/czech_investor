@@ -172,15 +172,17 @@ DEFAULT_STOCK_DB = {
     "CNDX.L": {"name": "iShares NASDAQ 100 (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 56.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
     "IWDP.L": {"name": "iShares Global REITs (Dist)", "sector": "ETF", "tags": [], "yield": 3.8, "growth": 2.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
 }
-# Seznam tickerů pro účely výpočtu úrokového rizika (REITs, BDCs, Utility)
+# Sektory, které trpí při růstu sazeb (REITs, Utilities)
 # Rozšiřitelný seznam, který aplikace použije pro Stress Test
-INTEREST_RATE_SENSITIVE_TICKERS = {
-    # BDC (Business Development Companies)
-    "MAIN", "HTGC", "ARCC", "OBDC", "BXSL", "CSWC", "GBDC", "FSK", "TSLX", "TRIN", "FDUS", "PSEC", "OCSL", "GSBD",
-    # REITs (Real Estate Investment Trusts) - nejznámější
+RATE_HARMED_TICKERS = {
     "O", "VICI", "WPC", "AMT", "PLD", "CCI", "SPG", "PSA", "DLR", "EQIX", "WELL", "VTR", "AVB", "INVH", "OHI", "SBRA",
-    # Utility (Infrastruktura s vysokým dluhem)
     "NEE", "TRIG.L", "PWR", "DUK", "SO", "NG.L", "SSE.L"
+}
+
+# Sektory, které z růstu sazeb těží (BDCs s plovoucími sazbami)
+# Rozšiřitelný seznam, který aplikace použije pro Stress Test
+RATE_BENEFITED_TICKERS = {
+    "MAIN", "HTGC", "ARCC", "OBDC", "BXSL", "CSWC", "GBDC", "FSK", "TSLX", "TRIN", "FDUS", "PSEC", "OCSL", "GSBD"
 }
 
 # Parametry pro Monte Carlo tuning portfolia
@@ -3513,16 +3515,27 @@ class CzechInvestorApp:
             if sector != "ETF":
                 sector_weights[sector] = sector_weights.get(sector, 0.0) + w
                 
-            if sector in ["Real Estate", "Utilities"] or "Capital" in name or t in INTEREST_RATE_SENSITIVE_TICKERS:
+            # Analýza úrokového rizika
+            if sector in ["Real Estate", "Utilities"] or t in RATE_HARMED_TICKERS:
+                # Tyto akcie trpí (REIT, Utilities)
                 rate_sensitive_weight += w
-                # Zjištění, kolik z aktuální hrubé dividendy tvoří tito "dlužníci"
                 rate_div_contribution += w * stock_yield
-                # Výpočet procentuálního poklesu hodnot citlivých akcií (typický pokles o 15 %, vážený betou)
-                # REITs a BDCs jsou extrémně citlivé, doporučený multiplikátor 1.0 - 1.2
+                
                 beta_adj = self.tuner_fundamentals[t].get("beta")
                 beta_adj = 1.0 if beta_adj is None else beta_adj
+                # Simulujeme pokles o 15 %
                 rate_sensitive_total_drop_pct += w * (0.15 * max(1.0, beta_adj))
                 
+            elif t in RATE_BENEFITED_TICKERS or ("Capital" in name and sector in ["Financial", "Financial Services"]):
+                # BDC fondy mají plovoucí sazby, z růstu sazeb těží.
+                # Fungují jako tlumič. Jejich hodnota při úrokovém šoku historicky neklesá (pokud nedojde rovnou k recesi).
+                # Přidáme je do statistiky jako "úrokově citlivé" pro informační účely, ale odečteme je z očekávaného propadu.
+                rate_sensitive_weight += w
+                # BDC fondy nesníží dividendu kvůli sazbám (naopak ji často zvýší), takže je nepřídáme do rate_div_contribution pro seškrtání.
+                
+                # Jako tlumič (hedge) mohou dokonce nepatrně ztlumit celkový propad portfolia (např. zhodnocení o 5%)
+                rate_sensitive_total_drop_pct -= w * 0.05
+
             if hasattr(self, 'tuner_fundamentals') and t in self.tuner_fundamentals:
                 beta = self.tuner_fundamentals[t].get("beta")
                 if beta is not None:
@@ -3572,13 +3585,14 @@ class CzechInvestorApp:
         yield_before_str = f"{yield_before:.1f}".replace('.', ',')
         yield_after_str = f"{yield_after:.1f}".replace('.', ',')
         
-        rate_tt = (f"Společnosti typu BDC, REIT a Utility využívají masivní cizí kapitál.\n"
-                   f"Růst úrokových sazeb centrálními bankami jim plošně prodražuje splácení dluhů.\n"
-                   f"(Pozn.: Úrokové cykly v USA a Evropě jsou silně propojené, jde o globální riziko).\n\n"
-                   f"Při nečekaném šoku (růst sazeb o 2 %) tyto akcie historicky klesají o 15 %.\n"
-                   f"Na ukázkovém portfoliu 100 000 Kč by to pro vás znamenalo:\n"
-                   f"• Okamžitý propad hodnoty portfolia o {drop_czk_str} Kč ({drop_pct_str} %)\n"
-                   f"• Seškrtání vašich ročních dividend odhadem o {div_cut_str} Kč ({yield_before_str} % → {yield_after_str} %).")
+        rate_tt = (f"REIT, BDC a Utility ({rate_str}) v portfoliu reagují citlivě na úrokové sazby centrálních bank.\n\n"
+                   f"Při růstu sazeb se tyto akcie chovají rozdílně:\n"
+                   f"📉 REITs a Utility (O, NEE...) trpí, prodražují se jim dluhy.\n"
+                   f"📈 BDC fondy (MAIN, ARCC...) těží z plovoucích úroků na svých úvěrech a fungují jako polštář.\n\n"
+                   f"Při úrokovém šoku (+2 % sazby) by po započtení tohoto zajištění portfolio 100 000 Kč odepsalo:\n"
+                   f"• {drop_czk_str} Kč ({drop_pct_str} %) z hodnoty akcií.\n"
+                   f"• {div_cut_str} Kč z ročních dividend od REITs a Utilit ({yield_before_str} % → {yield_after_str} %).\n"
+                   f"(Pozn.: Pro BDC fondy je větším rizikem kreditní selhání dlužníků v hluboké recesi, nikoliv samotné sazby).")
         
         # C) Sektorová koncentrace
         if sector_weights:
