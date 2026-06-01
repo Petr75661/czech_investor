@@ -14,7 +14,7 @@ Aplikace je navržena pro české investory, kteří vyžadují matematickou př
 1. Stáhněte si **Python 3.10+** z [python.org](https://www.python.org/).
 2. Při instalaci na Windows aktivujte volbu **"Add Python to PATH"**.
 
-### Krok 2: Instalace doplňků (Knihoven)
+### Krok 2: Instalace doplňků (knihoven)
 Aplikace využívá pokročilé knihovny pro data, grafiku a generování dokumentů. Otevřete terminál (CMD) a spusťte:
 ```bash
 pip install yfinance yahooquery pandas matplotlib numpy beautifulsoup4 requests reportlab pdfplumber
@@ -33,14 +33,14 @@ Definujte svůj "investiční vesmír" bez omezení.
 * **Plná podpora ETF:** Aplikace rozlišuje distribuční a akumulační UCITS ETF.
 * **Analytický pohled:** Inteligentní hodnocení diverzifikace a vyváženosti vašeho mixu (růst vs. cash-flow).
 
-### 📊 Pokročilý Tuning Portfolia
-Zcela unikátní dvouproudá optimalizace (Minulost vs. Budoucnost).
+### 📊 Pokročilý tuning portfolia
+Zcela unikátní dvouproudá optimalizace (minulost vs. budoucnost).
 * **Interaktivní fixace vah:** Dvojklikem na výseč v levém koláčovém grafu můžete zvolené akcii vnutit přesnou cílovou váhu. Monte Carlo algoritmus následně optimalizuje zbytek portfolia kolem tohoto pevného bodu.
 * **Trychtýř nejistoty:** Modelování pravděpodobných budoucích scénářů na základě volatility a cílů analytiků.
 * **Ochrana před value traps:** Vestavěný "účetní rozum" filtruje nesmyslné hodnoty payout ratií a snižuje rating firmám, které si na dividendu půjčují.
 * **Daňová brzda:** Grafy automaticky vizualizují ztrátu na složeném úročení způsobenou srážkovou 15% daní z dividend pro férové srovnání s ETF.
 
-### 🏦 Správa Ledgeru (FIFO)
+### 🏦 Správa ledgeru (FIFO)
 Striktní evidence nákupů a prodejů s respektem k lokální legislativě a poplatkům.
 * **IBKR Import (activity statement):** Načtěte CSV od brokera Interactive Brokers a aplikace automaticky spáruje všechny nákupy, zaznamená prodeje metodou FIFO, načte přijaté dividendy (včetně srážkových daní) a provede hloubkový audit vašich otevřených pozic.
 * **Optimalizace poplatků brokera:** Algoritmus při nákupu hlídá "minimum trade size" (např. IBKR Tiered minimum 0.35 USD / 1.00 GBP) a brání nesmyslným mikro-nákupům, které by spolkly velké procento na poplatcích.
@@ -48,7 +48,7 @@ Striktní evidence nákupů a prodejů s respektem k lokální legislativě a po
 * **FIFO algoritmus:** Přesný a legislativně korektní odečet kusů od nejstarších lotů.
 * **Měnové kurzy:** Samostatný scrapovací robot stahuje aktuální "jednotné kurzy" vyhlášené Ministerstvem financí.
 
-### 📄 Daňový Automat (One-Click Export)
+### 📄 Daňový automat (one-click export)
 Konec ručního vyplňování a počítání britských pencí.
 * **XML Export:** Vygeneruje soubor pro přímé a bezchybné nahrání do portálu **mojedane.cz**.
 * **PDF Kuchařka:** Lidsky srozumitelný dokument popisující, které hodnoty opsat do kterých řádků přiznání.
@@ -58,8 +58,8 @@ Konec ručního vyplňování a počítání britských pencí.
 
 ## 3. Investiční logika a rizika
 
-Výchozí nastavení databáze obsahuje pokročilé portfolio o 24 pozicích. Jde o
-maximálně diverzifikovanou **"All-Weather Dividend Growth"** strategii kombinující
+Výchozí nastavení databáze obsahuje portfolio o 24 pozicích. Jde o
+diverzifikovanou **"All-Weather Dividend Growth"** strategii kombinující
 americký technologický růst, průmyslové giganty a masivní britsko-americké
 cash-flow.
 
@@ -68,7 +68,7 @@ cash-flow.
 | Segment | Vlastnosti | Zastoupené tituly |
 | :--- | :--- | :--- |
 | **Technologický růst** | Kombinace inovací a navyšování dividend. | `AAPL`, `AVGO`, `MU` |
-| **Průmysl a Infrastruktura** | Cyklická síla a regulované utility.       | `CAT`, `TT`, `ETN`, `PWR`, `NEE`, `TRIG.L`   |
+| **Průmysl a infrastruktura** | Cyklická síla a regulované utility.       | `CAT`, `TT`, `ETN`, `PWR`, `NEE`, `TRIG.L`   |
 | **Defenzivní stabilita**     | Odolnost v recesi, zdraví a spotřeba.     | `JNJ`, `ABBV`, `PEP`, `ULVR.L`, `MRK`, `LLY` |
 | **Vysoké cash-flow (BDC)**   | Úvěry středním firmám s masivním výnosem. | `MAIN`, `ARCC`, `HTGC`, `TRIN`, `FDUS`       |
 | **Reality (REITs)**          | Pronájem nemovitostí a zdravotnická péče. | `O`, `OHI`, `SBRA`                           |
@@ -76,7 +76,7 @@ cash-flow.
 
 > [!WARNING]
 > **INVESTIČNÍ RIZIKA:**
-> * **Úrokové riziko:** Sektory REIT, BDC a Utilities spoléhají na cizí kapitál a mohou prudce klesat při nečekaném růstu úrokových sazeb centrálních bank.
+> * **Úrokové riziko:** Sektory REIT, BDC a utilities spoléhají na cizí kapitál a mohou prudce klesat při nečekaném růstu úrokových sazeb centrálních bank.
 > * **Měnové riziko:** Investujete v cizích měnách. Posílení CZK vůči USD/GBP technicky snižuje hodnotu vašeho portfolia v korunách, i když akcie samotné rostou.
 > * **Závislost na datech:** Aplikace využívá dvě různá API (yfinance a yahooquery), čímž je chráněna proti dočasným výpadkům a rate-limitům. I tak ale může případný globální a dlouhodobý výpadek serverů omezit některé analytické funkce.
 > * **Sektorová rizika:** Portfolio obsahuje specifické sektory (REITs, BDC, utilities), které podléhají jiným daňovým a regulačním pravidlům než běžné korporátní akcie.
