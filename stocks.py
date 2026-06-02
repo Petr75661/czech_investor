@@ -2207,25 +2207,27 @@ class CzechInvestorApp:
 
         fx = self.get_fx_rates()
         cur = self.get_currency_for_ticker(t)
-        fx_rate = fx.get(cur, 23.0) # 23.0 je pouze fallback pro případ absolutního výpadku sítě
+        fx_rate = fx.get(cur, 23.0) 
         
         val_czk = qty * price * fx_rate
 
-        found = False
-        for item in self.sell_staging_tree.get_children():
-            if str(self.sell_staging_tree.item(item)['values'][0]) == t:
-                # Uložení zpět: Kusy s tečkou, Cena s čárkou
-                self.sell_staging_tree.item(item, values=(
-                    t,
-                    f"{qty:.3f}".replace('.', ','), 
-                    f"{price:.2f}".replace('.', ','),
-                    f"{val_czk:.0f}",
-                    "❌"
-                ))
-                found = True
-                break
-
-        if not found:
+        # Podpora více prodejů stejného tickeru (partial fills od brokera):
+        # Zjistíme, zda má uživatel v tabulce zrovna kliknutím vybraný nějaký řádek.
+        selection = self.sell_staging_tree.selection()
+        
+        # Pokud je řádek vybraný a ticker se shoduje, provedeme úpravu tohoto konkrétního řádku (Update).
+        if selection and str(self.sell_staging_tree.item(selection[0])['values'][0]) == t:
+            self.sell_staging_tree.item(selection[0], values=(
+                t,
+                f"{qty:.3f}".replace('.', ','), 
+                f"{price:.2f}".replace('.', ','),
+                f"{val_czk:.0f}",
+                "❌"
+            ))
+            # Po úpravě řádek odznačíme, aby další kliknutí na tlačítko "Přidat" přidalo nový řádek
+            self.sell_staging_tree.selection_remove(selection[0])
+        else:
+            # Pokud není nic vybráno, nebo jde o jiný ticker, přidáme VŽDY nový řádek.
             self.sell_staging_tree.insert("", "end", values=(
                 t, f"{qty:.3f}".replace('.', ','), f"{price:.2f}".replace('.', ','), f"{val_czk:.0f}", "❌"
             ))
@@ -2345,11 +2347,11 @@ class CzechInvestorApp:
         tree_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         cols_config = {
-            "Datum": 100, 
+            "Datum": 140, 
             "Ticker": 80, 
-            "Částka": 173, 
-            "Stav": 174, 
-            "Nárok (CZK Hrubého)": 173
+            "Částka": 160, 
+            "Stav": 160, 
+            "Nárok (CZK Hrubého)": 160
         }
         # Přidání vertikálního posuvníku
         div_scroll = ttk.Scrollbar(tree_frame)
@@ -2417,6 +2419,12 @@ class CzechInvestorApp:
         Stáhne historii dividend od všech firem a vyprojektuje očekávaný výnos na zbytek roku.
         Zohledňuje burzovní pravidlo Ex-Dividend data (nákup musí být před tímto datem).
         """
+        # pomocná funkce pro české datum
+        def format_cz_date(d_obj):
+            months = ["", "leden", "únor", "březen", "duben", "květen", "červen", 
+                      "červenec", "srpen", "září", "říjen", "listopad", "prosinec"]
+            return f"{d_obj.day}. {months[d_obj.month]} {d_obj.year}"
+
         mode = self.div_mode_var.get()
         
         fx = self.get_fx_rates()
@@ -2526,7 +2534,7 @@ class CzechInvestorApp:
                         txt = f"{gross_val:.2f} {currency}".replace('.', ',')
                         calendar_rows.append({
                             "date": pay_date, 
-                            "values": (pay_date.strftime("%Y-%m-%d"), t, txt, "✅ Vyplaceno (IBKR)", f"{czk_gross:.0f} Kč".replace('.', ',')),
+                            "values": (format_cz_date(pay_date), t, txt, "✅ Vyplaceno (IBKR)", f"{czk_gross:.0f} Kč".replace('.', ',')),
                             "czk_gross": czk_gross, 
                             "czk_net": czk_net
                         })
@@ -2584,7 +2592,7 @@ class CzechInvestorApp:
                             ticker_dividend_totals[t] = ticker_dividend_totals.get(t, 0) + czk_val
                             
                             calendar_rows.append({
-                                "date": d_val, "values": (d_val.strftime("%Y-%m-%d"), t, txt, status_txt, f"{czk_val:.0f} Kč".replace('.', ',')),
+                                "date": d_val, "values": (format_cz_date(d_val), t, txt, status_txt, f"{czk_val:.0f} Kč".replace('.', ',')),
                                 "czk_gross": czk_val, "czk_net": net_czk_val
                             })
                     
@@ -2650,7 +2658,7 @@ class CzechInvestorApp:
                             ticker_dividend_totals[t] = ticker_dividend_totals.get(t, 0) + czk_val
                             
                             calendar_rows.append({
-                                "date": proj_date, "values": (proj_date.strftime("%Y-%m-%d"), t, txt, f"Projekce (x{growth_factor:.2f})".replace('.', ','), f"{czk_val:.0f} Kč".replace('.', ',')),
+                                "date": proj_date, "values": (format_cz_date(proj_date), t, txt, f"Projekce (x{growth_factor:.2f})".replace('.', ','), f"{czk_val:.0f} Kč".replace('.', ',')),
                                 "czk_gross": czk_val, "czk_net": net_czk_val
                             })
             except Exception as e: print(f"Chyba u {t}: {e}")
