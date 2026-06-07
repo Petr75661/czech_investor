@@ -325,7 +325,7 @@ class RobustDataFetcher:
             return close_df
 
     def fetch_dividends(self, ticker):
-        # ZDROJ 1: yfinance
+        # ZDROJ 1: yfinance (pod zámkem _yf_lock) [1]
         try:
             with self._yf_lock:
                 tick = yf.Ticker(ticker)
@@ -335,10 +335,11 @@ class RobustDataFetcher:
                 return divs
         except: pass
 
-        # ZDROJ 2: yahooquery
+        # ZDROJ 2: yahooquery (také pod zámkem _yf_lock)
         try:
-            yq_t = YQTicker(ticker, asynchronous=False) 
-            div_df = yq_t.dividend_history()
+            with self._yf_lock:
+                yq_t = YQTicker(ticker, asynchronous=False) 
+                div_df = yq_t.dividend_history()
             if isinstance(div_df, pd.DataFrame) and not div_df.empty and 'amount' in div_df.columns:
                 div_df = div_df.reset_index()
                 div_series = pd.Series(div_df['amount'].values, index=pd.to_datetime(div_df['date']))
@@ -485,6 +486,31 @@ class CzechInvestorApp:
         self.setup_tuner_tab()    
         self.setup_donation_tab()
 
+        # --- RYCHLÝ OFFLINE ODHAD PRO OKAMŽITÉ POUŽITÍ V TOOLTIPU ---
+        # Pokud hodnoty nebyly načteny ze souboru, spočítáme nouzový odhad z nákupů
+        if getattr(self, 'last_portfolio_value_czk', 0.0) == 0.0:
+            temp_val = 0.0
+            db_temp = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+            for t, lots in self.ledger.items():
+                p_factor = 0.01 if t.endswith('.L') else 1.0
+                for lot in lots:
+                    try:
+                        temp_val += float(lot['qty']) * float(lot['price_at_buy']) * p_factor * float(lot.get('fx_rate', 23.0))
+                    except:
+                        pass
+            self.last_portfolio_value_czk = temp_val
+            
+            temp_yield_sum = 0.0
+            for t in TARGETS.keys():
+                w = TARGETS.get(t, 0.0)
+                dy = db_temp.get(t, {}).get('yield', 0.0) / 100.0
+                temp_yield_sum += w * dy
+            self.last_nominal_yield = temp_yield_sum if temp_yield_sum > 0 else 0.04
+        
+        # Zámek a příznak pro asynchronní preload worker na pozadí
+        self._preload_thread_lock = threading.Lock()
+        self.tuner_preloading = False
+        
         self.root.after(2000, self.start_incremental_refresh)
 
     def on_close(self):
@@ -533,7 +559,11 @@ class CzechInvestorApp:
                     self.custom_min_w = float(data.get("min_w", MIN_W))
                     self.custom_max_w = float(data.get("max_w", MAX_W))
                     self.real_dividends = data.get("real_dividends",[])
-
+                    
+                    # Načtení uložených hodnot z minulé relace pro okamžitý start (použito v tooltipu)
+                    self.last_portfolio_value_czk = float(data.get("last_portfolio_value_czk", 0.0))
+                    self.last_nominal_yield = float(data.get("last_nominal_yield", 0.04))
+                    
                     # Načtení nastavení optimalizace poplatků
                     self.fee_percent = float(data.get("fee_percent", 0.5))
                     self.optimize_fees_enabled = data.get("optimize_fees_enabled", True)
@@ -543,7 +573,7 @@ class CzechInvestorApp:
                     
                     # Načtení nastavení dynamického cílování portfolia
                     self.dyn_targets_enabled = data.get("dyn_targets_enabled", False)
-                    self.dyn_yield_floor = float(data.get("dyn_yield_floor", 3.0))
+                    self.dyn_yield_cap = float(data.get("dyn_yield_cap", 3.0))
                     self.dyn_abs_div = float(data.get("dyn_abs_div", 500000))
 
                     return ledger, history, rates
@@ -554,7 +584,7 @@ class CzechInvestorApp:
         self.custom_min_w = MIN_W
         self.custom_max_w = MAX_W
         self.dyn_targets_enabled = False
-        self.dyn_yield_floor = 3.0
+        self.dyn_yield_cap = 3.0
         self.dyn_abs_div = 500000
         return {t:[] for t in TARGETS},[], {}
 
@@ -573,8 +603,11 @@ class CzechInvestorApp:
             "optimize_fees_enabled": getattr(self, 'optimize_fees_enabled', True),
             "editor_sort_mode": getattr(self, 'editor_sort_mode', 'metrics'),
             "dyn_targets_enabled": getattr(self, 'dyn_targets_enabled', False),
-            "dyn_yield_floor": getattr(self, 'dyn_yield_floor', 3.0),
-            "dyn_abs_div": getattr(self, 'dyn_abs_div', 500000)
+            "dyn_yield_cap": getattr(self, 'dyn_yield_cap', 3.0),
+            "dyn_abs_div": getattr(self, 'dyn_abs_div', 500000),
+            # hodnoty pro okamžitý start bez načítání (použito v tooltipu):
+            "last_portfolio_value_czk": getattr(self, 'last_portfolio_value_czk', 0.0),
+            "last_nominal_yield": getattr(self, 'last_nominal_yield', 0.04)
         }
         with open(PORTFOLIO_FILE, "w") as f: json.dump(data, f, indent=4)
 
@@ -759,12 +792,11 @@ class CzechInvestorApp:
         return pd.DataFrame()
 
     def _safe_get_dividends(self, ticker, max_retries=2):
-        """Stahuje dividendy paralelně s fallbackem."""
-        import time
+        """Stahuje dividendy s fallbackem a ochranou mezipaměti."""
         if not hasattr(self, '_div_cache'): self._div_cache = {}
-        if not hasattr(self, 'data_fetcher'): self.data_fetcher = RobustDataFetcher()
 
-        if ticker in self._div_cache:
+        # Z cache čteme pouze v případě, že obsahuje validní (ne-prázdná) data
+        if ticker in self._div_cache and not self._div_cache[ticker].empty:
             return self._div_cache[ticker]
 
         for i in range(max_retries):
@@ -774,12 +806,16 @@ class CzechInvestorApp:
                 return divs
             time.sleep(0.5)
 
-        empty_series = pd.Series(dtype=float)
-        self._div_cache[ticker] = empty_series
-        return empty_series
+        # Neukládáme prázdnou řadu natrvalo do cache, pokud šlo o dočasné selhání,
+        # abychom neotrávili mezipaměť a dovolili úspěšný pokus při příštím volání.
+        return pd.Series(dtype=float)
 
     def _safe_get_fundamentals(self, ticker, max_retries=3):
-        """Stahuje fundamentální data pro budoucí predikci (P/E, Výplatní poměr, Cílové ceny analytiků)."""
+        """
+        Stahuje fundamentální data pro budoucí predikci (P/E, Výplatní poměr, Cílové ceny analytiků).
+        Využívá yfinance s robustním záchranným fallbackem na yahooquery při chybě 401 Invalid Crumb.
+        Celá síťová komunikace je synchronizována přes sdílený zámek RobustDataFetcher._yf_lock.
+        """
         import time
         if not hasattr(self, '_fund_cache'):
             self._fund_cache = {}
@@ -787,11 +823,15 @@ class CzechInvestorApp:
         if ticker in self._fund_cache:
             return self._fund_cache[ticker]
             
+        # Pokus č. 1: yfinance (řízený zámkem _yf_lock)
         for i in range(max_retries):
             try:
-                time.sleep(0.5)
-                info = yf.Ticker(ticker).info
-                if info:
+                time.sleep(0.3)
+                # Synchronizace síťového požadavku přes sdílený třídní zámek
+                with RobustDataFetcher._yf_lock:
+                    info = yf.Ticker(ticker).info
+                
+                if info and isinstance(info, dict):
                     data = {
                         "pe_ratio": info.get('forwardPE') or info.get('trailingPE'),
                         "eps": info.get('forwardEps') or info.get('trailingEps'),
@@ -803,11 +843,52 @@ class CzechInvestorApp:
                     }
                     self._fund_cache[ticker] = data
                     return data
-            except Exception:
-                time.sleep(1.0 + i)
+            except Exception as e:
+                print(f"[!] yfinance .info selhalo pro {ticker} ({e}). Zkouším znovu...")
+                time.sleep(0.5 + i)
                 
-        # Při selhání nebo u ETF vrátíme bezpečné neutrální hodnoty
-        data = {"pe_ratio": None, "eps": None, "beta": None, "recommendation": None, "payout_ratio": 0.0, "target_price": None, "current_price": None}
+        # Pokus č. 2: Záchranný fallback přes yahooquery (také pod zámkem _yf_lock)
+        print(f"[!] Používám yahooquery jako záchranný zdroj pro fundamenty {ticker}")
+        try:
+            with RobustDataFetcher._yf_lock:
+                yq_t = YQTicker(ticker, asynchronous=False)
+                summary_detail = yq_t.summary_detail.get(ticker, {}) if hasattr(yq_t, 'summary_detail') else {}
+                financial_data = yq_t.financial_data.get(ticker, {}) if hasattr(yq_t, 'financial_data') else {}
+                key_statistics = yq_t.key_statistics.get(ticker, {}) if hasattr(yq_t, 'key_statistics') else {}
+            
+            if isinstance(summary_detail, dict) and isinstance(financial_data, dict):
+                pe_ratio = summary_detail.get('forwardPE') or summary_detail.get('trailingPE')
+                eps = key_statistics.get('trailingEps') or key_statistics.get('forwardEps') if isinstance(key_statistics, dict) else None
+                beta = summary_detail.get('beta')
+                recommendation = financial_data.get('recommendationKey')
+                payout_ratio = summary_detail.get('payoutRatio') or 0.0
+                target_price = financial_data.get('targetMeanPrice')
+                current_price = summary_detail.get('currentPrice') or summary_detail.get('previousClose')
+                
+                data = {
+                    "pe_ratio": pe_ratio,
+                    "eps": eps,
+                    "beta": beta,
+                    "recommendation": recommendation,
+                    "payout_ratio": payout_ratio,
+                    "target_price": target_price,
+                    "current_price": current_price
+                }
+                self._fund_cache[ticker] = data
+                return data
+        except Exception as e:
+            print(f"[!] Selhal i záchranný zdroj yahooquery pro {ticker}: {e}")
+
+        # Úplný nouzový fallback (neutrální hodnoty)
+        data = {
+            "pe_ratio": None, 
+            "eps": None, 
+            "beta": None, 
+            "recommendation": None, 
+            "payout_ratio": 0.0, 
+            "target_price": None, 
+            "current_price": None
+        }
         self._fund_cache[ticker] = data
         return data
 
@@ -1030,29 +1111,31 @@ class CzechInvestorApp:
         self.cb_dyn_opt.bind("<Enter>", lambda e: self._show_tooltip(tt_main))
         self.cb_dyn_opt.bind("<Leave>", lambda e: self._hide_tooltip())
 
-        tk.Label(dyn_frame, text=" |  Min. yield (polštář):", font=("Arial", 12), bg="#E3F2FD").pack(side=tk.LEFT)
+        tk.Label(dyn_frame, text=" |  Max. yield (strop pro růst):", font=("Arial", 11), bg="#E3F2FD").pack(side=tk.LEFT)
         
         self.dyn_floor_slider = tk.Scale(dyn_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL, 
                                          length=150, bg="#E3F2FD", font=("Arial", 12))
-        self.dyn_floor_slider.set(getattr(self, 'dyn_yield_floor', 3.0))
+        self.dyn_floor_slider.set(getattr(self, 'dyn_yield_cap', 3.0))
         self.dyn_floor_slider.pack(side=tk.LEFT, padx=5)
         # Připojení eventu na uvolnění tlačítka myši (netrhá to aplikaci při tažení)
         self.dyn_floor_slider.bind("<ButtonRelease-1>", self._on_dyn_opt_change)
 
         # Dynamický výpočet maxima slideru podle aktuálních vah
-        db_temp = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
-        nom_yield = sum(TARGETS.get(t, 0) * (db_temp.get(t, {}).get('yield', 0) / 100.0) for t in TARGETS.keys())
-        max_slider = round((nom_yield + 0.001) * 100, 2)
+        # Používáme last_nominal_yield (načteno z JSONu jako poslední známá přesná hodnota), 
+        # nikoliv statická data z databáze, aby to ihned po startu sedělo se simulací.
+        nom_yield = getattr(self, 'last_nominal_yield', 0.04)
+        max_slider = round(nom_yield * 100, 2)
         if max_slider < 0.5: max_slider = 5.0 # Fallback pro úplně prázdné portfolio
         self.dyn_floor_slider.config(to=max_slider)
 
         tk.Label(dyn_frame, text="%", font=("Arial", 11), bg="#E3F2FD").pack(side=tk.LEFT)
         
         # Tooltip pro Slider
-        tt_slider = ("Ochranný polštář do krize (dividend yield floor).\n"
-                     "Určuje absolutní minimum úročení portfolia. I když budou akcie raketově růst,\n"
-                     "aplikace nikdy neutlumí dividendy tak silně, aby váš roční výnos klesl pod\n"
-                     "tuto hodnotu. Toto nastavení se projeví až po překročení cílového pasivního příjmu.")
+        tt_slider = ("Maximální povolený dividendový výnos portfolia.\n"
+                     "Pokud vaše aktuální cílové váhy generují vyšší procento dividend než tento limit, aplikace před nákupem utlumí\n"
+                     "požadavky na nákup dividendových akcií a přesměruje volné peníze do růstových titulů.\n"
+                     "Tím vás ve fázi budování majetku (a zvláště v krizi) ochrání před uvíznutím v pomalých titulech.\n"
+                     "Po dosažení cílového pasivního příjmu už nákup dividendých akcií není limitován (portfolio prioritizuje rentu).")
         self.dyn_floor_slider.bind("<Enter>", lambda e: self._show_tooltip(tt_slider))
         self.dyn_floor_slider.bind("<Leave>", lambda e: self._hide_tooltip())
 
@@ -1064,11 +1147,8 @@ class CzechInvestorApp:
         self.dyn_abs_entry.bind("<Return>", self._on_dyn_opt_change)
         tk.Label(dyn_frame, text="Kč / rok", font=("Arial", 12), bg="#E3F2FD").pack(side=tk.LEFT)
         
-        # Tooltip pro Absolutní cíl
-        tt_abs = ("Vaše cílová částka pro čistý roční pasivní dividendový příjem. Jakmile vaše portfolio vyroste\n"
-                  "natolik, že mu k vyplacení této částky stačí nižší procentuální dividendový yield než je\n"
-                  "nastavený polštář, aplikace začne dotovat růstové akcie na úkor dividendových.")
-        self.dyn_abs_entry.bind("<Enter>", lambda e: self._show_tooltip(tt_abs))
+        # Dynamický tooltip pro Absolutní cíl (s predikcí času a analýzou historie)
+        self.dyn_abs_entry.bind("<Enter>", lambda e: self._show_tooltip(self.get_dyn_abs_tooltip_text()))
         self.dyn_abs_entry.bind("<Leave>", lambda e: self._hide_tooltip())
 
         # Počáteční nastavení stavu (zešednutí) podle zaškrtávacího políčka
@@ -1193,7 +1273,7 @@ class CzechInvestorApp:
         except ValueError:
             self.dyn_abs_div = 500000.0
             
-        self.dyn_yield_floor = float(self.dyn_floor_slider.get())
+        self.dyn_yield_cap = float(self.dyn_floor_slider.get())
         self.dyn_targets_enabled = is_enabled
         
         self.save_data()
@@ -1268,7 +1348,7 @@ class CzechInvestorApp:
             if getattr(self, 'dyn_targets_enabled', False) and projected_total_val > 0:
                 try:
                     # 1. Zjištění limitů z UI (čte přímo aktuální text v políčku, i bez stisku Enter)
-                    yield_floor = float(self.dyn_floor_slider.get()) / 100.0
+                    yield_cap = float(self.dyn_floor_slider.get()) / 100.0
                     try:
                         abs_target_net_czk = float(self.dyn_abs_entry.get().replace(' ', '').replace(',', '.'))
                         if abs_target_net_czk < 0.0: abs_target_net_czk = 0.0
@@ -1277,9 +1357,6 @@ class CzechInvestorApp:
                         
                     # Přepočet požadované čisté částky na hrubou (zohlednění 15% daně)
                     abs_target_gross_czk = abs_target_net_czk / 0.85
-                    
-                    required_yield_for_target = abs_target_gross_czk / projected_total_val
-                    target_yield_limit = max(yield_floor, required_yield_for_target)
                     
                     # 2. Sestavení ŽIVÝCH výnosů (včetně aktuální tržní ceny z yfinance)
                     db = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
@@ -1313,9 +1390,12 @@ class CzechInvestorApp:
                                                 total_div += amt
                                                 
                                         if total_div > 0:
+                                            # U britských akcií musíme i dividendu převést z pencí na libry
+                                            if t.endswith(".L"):
+                                                total_div /= 100.0
                                             calc_dy = total_div / curr_price
                                             # Sanity check: omezíme na max 25% (vyhne se chybám při reverse splitu)
-                                            if 0 < calc_dy <= 0.25: 
+                                            if 0 < calc_dy <= 0.25:
                                                 dy = calc_dy
                             except Exception:
                                 pass
@@ -1331,12 +1411,39 @@ class CzechInvestorApp:
                     if max_slider_val < 0.5: max_slider_val = 5.0
                     self.root.after(0, lambda v=max_slider_val: self.dyn_floor_slider.config(to=v))
                     
-                    # 4. Ochrana před matematickou nemožností
-                    # Nedovolíme cílovat pod nejmenší možný yield v portfoliu (s rezervou 0.5%, aby nám nevypadly růstové akcie s malou dividendou)
-                    min_possible_yield = np.min(yields_array[nom_weights > 0])
-                    safe_target_yield = max(target_yield_limit, min_possible_yield + 0.005)
+                    # 4. ROZHODNUTÍ O FÁZI ŽIVOTNÍHO CYKLU
+                    # Jakou hrubou dividendu by portfolio neslo, kdybychom NIKDY nepoužili brzdu?
+                    achievable_gross_div = nom_portfolio_yield * projected_total_val
+
+                    # Zjištění, z jaké části už portfolio dokáže generovat cílovou rentu (od 0.0 do 1.0)
+                    progress = achievable_gross_div / abs_target_gross_czk if abs_target_gross_czk > 0 else 1.0
+
+                    # Od jakého procenta splnění cíle má začít přechod k dividendám (např. od 50 %)
+                    ramp_start = 0.5 
+
+                    if progress >= 1.0:
+                        # FÁZE 3: RENTA. Cíl je splněn. Vypínáme brzdu úplně.
+                        target_yield_limit = nom_portfolio_yield + 1.0 
+                    elif progress <= ramp_start:
+                        # FÁZE 1: ČISTÁ AKUMULACE. Tvrdě brzdíme nákup dividendových akcií podle slideru.
+                        target_yield_limit = yield_cap
+                    else:
+                        # FÁZE 2: PŘECHOD (GLIDE-PATH).
+                        # Výpočet pozice na rampě (0.0 na začátku rampy, 1.0 na konci u cíle)
+                        ramp_position = (progress - ramp_start) / (1.0 - ramp_start)
+                        
+                        # Použití kubické křivky (x^3) pro pomalý začátek a strmější konec
+                        alpha = ramp_position ** 3
+                        
+                        # Plynulé zvedání povoleného limitu od slideru (yield_cap) směrem k přirozené dividendě
+                        target_yield_limit = yield_cap + alpha * (nom_portfolio_yield - yield_cap)
                     
-                    # 5. Aplikace exponenciální brzdy
+                    # Ochrana před matematickou nemožností
+                    # Nedovolíme cílovat pod nejmenší možný yield v portfoliu (s aditivní rezervou 0.4%, aby nám nevypadly růstové akcie s malou dividendou)
+                    min_possible_yield = np.min(yields_array[nom_weights > 0])
+                    safe_target_yield = max(target_yield_limit, min_possible_yield + 0.004)
+                    
+                    # 5. Aplikace exponenciální brzdy (provede se vždy, pokud target_yield_limit nedosáhl nom_portfolio_yield)
                     if nom_portfolio_yield > safe_target_yield:
                         low, high = 0.0, 5000.0 # Zvýšený limit pro jemnější krok
                         best_w = nom_weights
@@ -1460,6 +1567,57 @@ class CzechInvestorApp:
 
             # Skutečná hodnota portfolia po zainvestování vložené částky
             projected_total_val = total_current_portfolio_val + invest
+
+            # --- ULOŽENÍ PARAMETRŮ PRO DYNAMICKOU PREDIKCI (ŽIVÝ DYNAMICKÝ YIELD) ---
+            db_temp = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+            temp_yield_sum = 0.0
+            
+            for t in TARGETS.keys():
+                w = TARGETS.get(t, 0.0)
+                if w <= 0:
+                    continue
+                
+                # Výchozí hodnota je statická z databáze
+                dy = db_temp.get(t, {}).get('yield', 0.0) / 100.0
+                
+                # Zkusíme výpočet zpřesnit pomocí stažených cen a historie dividend
+                try:
+                    meta = db_temp.get(t, {})
+                    if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
+                        dy = 0.0
+                    else:
+                        price = float(prices_data[t])
+                        if t.endswith(".L"): 
+                            price /= 100.0
+                        
+                        if price > 0:
+                            hist_divs = self._safe_get_dividends(t)
+                            if not hist_divs.empty:
+                                current_year = datetime.now().year
+                                # Součet letošních dividend + odhad loňských chybějících
+                                divs_curr = hist_divs[hist_divs.index.year == current_year]
+                                divs_last = hist_divs[hist_divs.index.year == current_year - 1]
+                                
+                                total_div = sum(divs_curr)
+                                conf_months = [d.month for d in divs_curr.index]
+                                for d_date, amt in divs_last.items():
+                                    if d_date.month not in conf_months:
+                                        total_div += amt
+                                        
+                                if total_div > 0:
+                                    # U britských akcií musíme i dividendu převést z pencí na libry
+                                    if t.endswith(".L"):
+                                        total_div /= 100.0
+                                    calc_dy = total_div / price
+                                    if 0 < calc_dy <= 0.25:
+                                        dy = calc_dy
+                except Exception:
+                    pass # Při chybě se tiše použije výchozí static dy
+                    
+                temp_yield_sum += w * dy
+                
+            self.last_nominal_yield = temp_yield_sum if temp_yield_sum > 0 else 0.04
+            self.last_portfolio_value_czk = total_current_portfolio_val
 
             raw_rows_data = []
             info_data_temp = {} 
@@ -2205,6 +2363,390 @@ class CzechInvestorApp:
         threading.Thread(target=self.refresh_dividends, daemon=True).start()
         messagebox.showinfo("Úspěch", f"Úspěšně zapsáno {count} obchodů do portfolia.")
 
+    def analyze_historical_data(self):
+        """
+        Robustní statistický modul. Analyzuje historii nákupů v JSON ledgeru pro odhad 
+        středního měsíčního vkladu, trendu jeho růstu a kombinuje pětiletou historii 
+        portfolia s konsenzem analytiků pro odhad budoucího ročního zhodnocení.
+        """
+
+        # --- 1. ODHAD PRAVIDELNÉHO MĚSÍČNÍHO VKLADU A JEHO TRENDU ---
+        median_deposit = None
+        deposit_growth = 0.03 # Výchozí konzervativní odhad růstu vkladů / inflace (3 %)
+        
+        all_purchases = []
+        for ticker, lots in self.ledger.items():
+            p_factor = 0.01 if ticker.endswith('.L') else 1.0
+            for lot in lots:
+                try:
+                    dt = pd.to_datetime(lot['date'])
+                    qty = float(lot['qty'])
+                    price = float(lot['price_at_buy'])
+                    fx_rate = float(lot.get('fx_rate', 23.0))
+                    czk_val = qty * price * p_factor * fx_rate
+                    all_purchases.append({'date': dt, 'czk': czk_val})
+                except:
+                    pass
+
+        # Pokud v ledgeru existují obchody, provedeme očištění dat
+        if all_purchases:
+            df = pd.DataFrame(all_purchases)
+            df['year_month'] = df['date'].dt.to_period('M')
+            monthly_sums = df.groupby('year_month')['czk'].sum()
+            
+            # Statisticky významné množství dat definujeme jako alespoň 6 měsíců historie
+            if len(monthly_sums) >= 6:
+                # Rekonstrukce kompletní měsíční osy od prvního do posledního nákupu (vč. prázdných měsíců)
+                full_range = pd.period_range(start=monthly_sums.index.min(), end=monthly_sums.index.max(), freq='M')
+                monthly_sums = monthly_sums.reindex(full_range, fill_value=0.0)
+                
+                # IQR Filtrace: Odstraníme měsíce s nulou a vyřadíme extrémní ojedinělé obří vklady (outliery)
+                active_months = monthly_sums[monthly_sums > 100] 
+                if len(active_months) >= 4:
+                    q1 = active_months.quantile(0.25)
+                    q3 = active_months.quantile(0.75)
+                    iqr = q3 - q1
+                    upper_bound = q3 + 1.5 * iqr
+                    
+                    filtered_sums = monthly_sums[monthly_sums <= upper_bound]
+                    
+                    # Robustní střední hodnota pravidelného vkladu (medián z očištěných aktivních měsíců)
+                    valid_active = filtered_sums[filtered_sums > 100]
+                    if not valid_active.empty:
+                        median_deposit = float(valid_active.median())
+                    
+                    # Odhad růstového trendu vkladů pomocí lineární regrese nad očištěnými daty
+                    if len(filtered_sums) >= 6:
+                        x = np.arange(len(filtered_sums))
+                        y = filtered_sums.values
+                        slope, intercept = np.polyfit(x, y, 1)
+                        
+                        if median_deposit and median_deposit > 0:
+                            monthly_growth_rate = slope / median_deposit
+                            annual_growth_rate = (1 + monthly_growth_rate) ** 12 - 1
+                            # Bezpečné dlouhodobé ohraničení (tempo růstu vkladů omezíme na 0 % až 10 % p.a.)
+                            deposit_growth = float(np.clip(annual_growth_rate, 0.0, 0.10))
+
+        # FALLBACK: Pokud nemáme dostatek dat, použijeme aktuální hodnotu z textového pole kalkulátoru
+        if median_deposit is None or median_deposit < 500:
+            try:
+                median_deposit = float(self.cash_entry.get().replace(',', '.'))
+            except:
+                median_deposit = 20000.0 # Absolutní nouzový vklad v Kč
+
+        # --- 2. ODHAD BUDOUCÍHO RŮSTU PORTFOLIA (CAGR + ANALYTICI) ---
+        portfolio_growth = 0.075 # Výchozí konzervativní odhad (7.5 % p.a.)
+        
+        # Pokud máme v paměti stažená historická a fundamentální data z karty Tuner
+        if getattr(self, 'tuner_data_loaded', False) and hasattr(self, 'tuner_stock_growths'):
+            hist_cagrs = []
+            weights = []
+            
+            for i, t in enumerate(self.ordered_tickers):
+                w = TARGETS.get(t, 0.0)
+                weights.append(w)
+                
+                # Zjištění 5letého zhodnocení akcie ze stažených dat
+                start_to_end_ratio = self.tuner_stock_growths[i]
+                if start_to_end_ratio > 0:
+                    growth_mult_5y = 1.0 / start_to_end_ratio
+                    cagr = (growth_mult_5y ** 0.2) - 1.0 # Přepočet na roční CAGR
+                else:
+                    cagr = 0.06 # fallback 6%
+                hist_cagrs.append(cagr)
+                
+            weights = np.array(weights)
+            if np.sum(weights) > 0:
+                weights = weights / np.sum(weights)
+                
+                # Vážený průměr historie a vážený průměr 1y odhadů analytiků (upsides)
+                weighted_hist_cagr = np.sum(weights * np.array(hist_cagrs))
+                weighted_analyst_cagr = np.sum(weights * self.tuner_upsides)
+                
+                # Kombinace: 80 % dáváme reálné pětileté historii, 20 % dáváme konsenzu analytiků
+                calculated_growth = 0.8 * weighted_hist_cagr + 0.2 * weighted_analyst_cagr
+                # Bezpečné zastropování celého portfolia pro reálné dlouhodobé plánování (4 % až 30 % p.a.)
+                portfolio_growth = float(np.clip(calculated_growth, 0.04, 0.30))
+        else:
+            # Data nejsou načtena. Pokud ještě neběží stahování na pozadí, bezpečně ho nastartujeme pod zámkem
+            if hasattr(self, '_preload_thread_lock'):
+                with self._preload_thread_lock:
+                    if not self.tuner_preloading:
+                        self.tuner_preloading = True
+                        import threading
+                        threading.Thread(target=self._async_preload_worker, daemon=True).start()
+
+
+        return {
+            "monthly_deposit": median_deposit,
+            "deposit_growth": deposit_growth,
+            "portfolio_growth": portfolio_growth
+        }
+
+    def _async_preload_worker(self):
+        """
+        Asynchronní worker běžící na pozadí. Tiše stáhne 5letou historii,
+        dynamicky spočítá dividendové výnosy z historie dividend a uloží
+        analytické cíle pro všechny aktivní akcie do paměti.
+        Využije se pro rychlou aktualizaci tooltipu na záložce nákupů
+        (odhad času dosažení cílového pasivního příjmu)
+        """
+        try:
+            tickers = list(TARGETS.keys())
+            if not tickers:
+                return
+
+            # 1. Stažení pětiletých dat pro akcie a index S&P 500
+            all_to_download = tickers + ["SPY"]
+            downloaded = self._safe_yf_download(all_to_download, period="5y")
+            
+            if downloaded.empty or 'Close' not in downloaded:
+                return
+                
+            full_raw_data = downloaded['Close'].replace(0.0, np.nan)
+            data = full_raw_data[tickers].ffill().bfill()
+            
+            # Výpočet start/end poměrů pro CAGR
+            rel_start_prices = (data.iloc[0] / data.iloc[-1])
+            ordered_tickers = rel_start_prices.index.tolist()
+            tuner_stock_growths = rel_start_prices.values
+            
+            # 2. Dynamický výpočet dividendových výnosů (stejně jako v hlavním tuneru)
+            div_yields = {}
+            today_date = datetime.now().date()
+            current_year = today_date.year
+            end_of_year = date(current_year, 12, 31)
+
+            for t in ordered_tickers:
+                meta = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {})
+                if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
+                    div_yields[t] = 0.0
+                    continue
+
+                dy = (meta.get("yield", 0.0) / 100.0) # Výchozí statický yield
+                try:
+                    hist_divs = self._safe_get_dividends(t)
+                    if not hist_divs.empty:
+                        divs_current = hist_divs[hist_divs.index.year == current_year]
+                        divs_last = hist_divs[hist_divs.index.year == current_year - 1]
+                        
+                        total_div_local = sum(divs_current)
+                        confirmed_months = [d.date().month for d in divs_current.index]
+                        for d_date, amount in divs_last.items():
+                            try:
+                                proj_date = d_date.date().replace(year=current_year)
+                            except:
+                                proj_date = d_date.date() + timedelta(days=365)
+                            
+                            if proj_date.month not in confirmed_months:
+                                total_div_local += amount
+                        
+                        curr_price = float(data[t].iloc[-1])
+                        if curr_price > 0:
+                            calc_dy = total_div_local / curr_price
+                            if 0 < calc_dy <= 0.25:
+                                dy = calc_dy
+                except Exception as ex:
+                    print(f"[!] Výpočet živého dividendového výnosu selhal pro {t}: {ex}")
+                div_yields[t] = dy
+            
+            # 3. Stažení fundamentů a výpočet zdaněných/bezpečných dividend
+            upsides = []
+            safe_divs = []
+            tuner_fundamentals = {}
+            
+            for t in ordered_tickers:
+                fund = self._safe_get_fundamentals(t)
+                sector = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {}).get("sector", "Unknown")
+                
+                raw_yield = div_yields.get(t, 0.0)
+                payout = fund['payout_ratio']
+                
+                # Výpočet bezpečné dividendy s ohledem na srážkovou daň a payout ratio
+                safe_yield, payout, limit = self._evaluate_dividend_safety(sector, raw_yield, payout)
+                safe_divs.append(safe_yield)
+                
+                tuner_fundamentals[t] = {
+                    "payout_ratio": payout,
+                    "raw_yield": raw_yield,
+                    "safe_yield": safe_yield,
+                    "limit": limit,
+                    "pe_ratio": fund.get('pe_ratio'),
+                    "eps": fund.get('eps'),
+                    "beta": fund.get('beta'),
+                    "recommendation": fund.get('recommendation')
+                }
+                
+                # Cílový růst podle konsenzu analytiků (upside)
+                tp = fund['target_price']
+                cp = fund['current_price']
+                if tp and cp and cp > 0:
+                    ups = (tp / cp) - 1.0
+                else:
+                    # Fallback při chybějících datech o cílové ceně (odvozeno z CAGR)
+                    idx = ordered_tickers.index(t)
+                    hist_growth_ratio = 1.0 / tuner_stock_growths[idx]
+                    ann_ret = (hist_growth_ratio ** (1/5.0)) - 1.0 if hist_growth_ratio > 0 else 0.0
+                    ups = min(ann_ret, 0.10)
+                upsides.append(ups)
+                
+            # 4. Bezpečné uložení výsledků do instance pro ostatní části aplikace
+            self.ordered_tickers = ordered_tickers
+            self.tuner_stock_growths = tuner_stock_growths
+            self.tuner_stock_divs = np.array([div_yields.get(t, 0.03) for t in ordered_tickers])
+            self.tuner_upsides = np.array(upsides)
+            self.tuner_safe_divs = np.array(safe_divs)
+            self.tuner_fundamentals = tuner_fundamentals
+            
+            # --- JEDNORÁZOVÁ AKTUALIZACE PRO DYNAMICKÝ TOOLTIP ---
+            # 1. Výpočet aktuálního nominálního výnosu z čerstvě stažených cen
+            temp_yield_sum = 0.0
+            for t in TARGETS.keys():
+                w = TARGETS.get(t, 0.0)
+                dy = div_yields.get(t, 0.0)
+                temp_yield_sum += w * dy
+            self.last_nominal_yield = temp_yield_sum if temp_yield_sum > 0 else 0.04
+
+            # --- DYNAMICKÁ AKTUALIZACE SLIDERU NA ZÁLOŽCE NÁKUP (ihned po stažení živých dat) ---
+            if hasattr(self, 'dyn_floor_slider'):
+                max_slider_val = round(self.last_nominal_yield * 100, 2)
+                if max_slider_val < 0.5: max_slider_val = 5.0
+                # Musíme volat přes .after(0), abychom bezpečně sáhli na UI z pracovního vlákna
+                self.root.after(0, lambda v=max_slider_val: self.dyn_floor_slider.config(to=v))
+
+            # 2. Výpočet aktuální hodnoty portfolia v CZK
+            fx_rates = self.get_fx_rates()
+            temp_portfolio_val = 0.0
+            for t in tickers:
+                qty_now = sum(l['qty'] for l in self.ledger.get(t, []))
+                if qty_now > 0:
+                    try:
+                        price = float(data[t].iloc[-1])
+                        if t.endswith(".L"): 
+                            price /= 100.0
+                        curr = self.get_currency_for_ticker(t)
+                        temp_portfolio_val += qty_now * price * fx_rates.get(curr, 23.0)
+                    except:
+                        pass
+            self.last_portfolio_value_czk = temp_portfolio_val
+            
+            # Označení, že data jsou kompletně připravena
+            self.tuner_data_loaded = True 
+            
+        except Exception as e:
+            print(f"[!] Chyba asynchronního načítání dat: {e}")
+            
+        finally:
+            # Vždy bezpečně uvolníme příznak stahování pod zámkem, aby se dalo v budoucnu spustit znovu
+            if hasattr(self, '_preload_thread_lock'):
+                with self._preload_thread_lock:
+                    self.tuner_preloading = False
+            else:
+                self.tuner_preloading = False
+
+    def estimate_years_to_target(self, current_val, target_val, monthly_deposit, portfolio_growth, deposit_growth):
+        """Vypočítá odhadovaný čas v letech do dosažení cílové hodnoty portfolia."""
+        if current_val >= target_val:
+            return 0.0
+        if monthly_deposit <= 0 and current_val <= 0:
+            return float('inf')
+            
+        val = current_val
+        dep = monthly_deposit
+        months = 0
+        
+        # Maximální limit 50 let pro zamezení případného zacyklení
+        while val < target_val and months < 600:
+            # Měsíční složené úročení portfolia + měsíční vklad
+            val = val * (1 + portfolio_growth / 12) + dep
+            
+            # Každý rok navýšíme pravidelný vklad o vypočtené tempo růstu (inflaci/trend)
+            if months % 12 == 0 and months > 0:
+                dep *= (1 + deposit_growth)
+            months += 1
+            
+        return months / 12.0
+
+    def get_dyn_abs_tooltip_text(self):
+        """Generuje dynamický text tooltipu pro cílový pasivní příjem s predikcí."""
+        try:
+            # Načtení zadané čisté renty z UI
+            abs_target_net_czk = float(self.dyn_abs_entry.get().replace(' ', '').replace(',', '.'))
+        except:
+            abs_target_net_czk = getattr(self, 'dyn_abs_div', 500000.0)
+            
+        # Přepočet na hrubou rentu (před 15% srážkovou daní v ČR)
+        abs_target_gross_czk = abs_target_net_czk / 0.85 
+        
+        # Spuštění statistické analýzy
+        stats = self.analyze_historical_data()
+        
+        # Načtení aktuální hodnoty portfolia
+        curr_val_czk = getattr(self, 'last_portfolio_value_czk', 0.0)
+        # Pokud je hodnota nula (čerstvý start), zrekonstruujeme ji aspoň z nákupních nákladů v ledgeru
+        if curr_val_czk == 0.0:
+            for t, lots in self.ledger.items():
+                p_factor = 0.01 if t.endswith('.L') else 1.0
+                for lot in lots:
+                    try:
+                        curr_val_czk += float(lot['qty']) * float(lot['price_at_buy']) * p_factor * float(lot.get('fx_rate', 23.0))
+                    except:
+                        pass
+                        
+        nom_yield = getattr(self, 'last_nominal_yield', 0.04) 
+        
+        # Výpočet cílové hodnoty portfolia, abychom při daném výnosu bezpečně vygenerovali rentu
+        target_val_czk = abs_target_gross_czk / nom_yield if nom_yield > 0 else 0.0
+
+        # Výpočet aktuálního procenta splnění cílové hodnoty
+        achieved_pct = (curr_val_czk / target_val_czk * 100) if target_val_czk > 0 else 0.0
+        
+        # Výpočet predikce
+        years = self.estimate_years_to_target(
+            current_val=curr_val_czk,
+            target_val=target_val_czk,
+            monthly_deposit=stats["monthly_deposit"],
+            portfolio_growth=stats["portfolio_growth"],
+            deposit_growth=stats["deposit_growth"]
+        )
+        
+        # Formátování výstupu pro českého uživatele (tisíce oddělené mezerou, desetiny čárkou)
+        target_net_str = f"{abs_target_net_czk:,.0f}".replace(',', ' ')
+        target_gross_str = f"{abs_target_gross_czk:,.0f}".replace(',', ' ')
+        target_val_str = f"{target_val_czk:,.0f}".replace(',', ' ')
+        curr_val_str = f"{curr_val_czk:,.0f}".replace(',', ' ')
+        monthly_dep_str = f"{stats['monthly_deposit']:,.0f}".replace(',', ' ')
+
+        # Převedení desetinných teček na české čárky
+        achieved_pct_str = f"{achieved_pct:.1f}".replace('.', ',')
+        nom_yield_str = f"{nom_yield*100:.1f}".replace('.', ',')
+        dep_growth_str = f"{stats['deposit_growth']*100:.1f}".replace('.', ',')
+        port_growth_str = f"{stats['portfolio_growth']*100:.1f}".replace('.', ',')
+        
+        if years == 0.0:
+            pred_str = "Dosaženo! 🎉 Vaše portfolio již tento cíl splňuje."
+        elif years == float('inf'):
+            pred_str = "Nelze spočítat (chybí vklady)."
+        elif years < 1.0:
+            months = round(years * 12)
+            pred_str = f"Odhadovaný čas: cca {months} měsíců"
+        else:
+            years_cz = f"{years:.1f}".replace('.', ',')
+            pred_str = f"Odhadovaný čas: {years_cz} let"
+            
+        tooltip_text = (
+            f"🎯 Predikce dosažení cílové roční dividendové renty\n"
+            f"───────────────────────────────────\n"
+            f"• Požadovaná čistá renta: {target_net_str} / rok\n"
+            f"• Cílová hodnota portfolia: {target_val_str} (při yieldu {nom_yield_str} %)\n"
+            f"• Současná hodnota portfolia: {curr_val_str} ({achieved_pct_str} % z cíle)\n"
+            f"• Analyzovaný pravidelný vklad: {monthly_dep_str} / měsíc\n"
+            f"• Růst vkladů p.a.: {stats['deposit_growth']*100:.1f} % (inflace / trend)\n"
+            f"• Očekávané zhodnocení akcií: {stats['portfolio_growth']*100:.1f} % p.a. (historie + analytici)\n"
+            f"───────────────────────────────────\n"
+            f"📈 {pred_str}"
+        )
+        return tooltip_text
 
     # --------------------------------------------------------------------------
     # TAB 2: SPRÁVA POZIC A PRODEJŮ (PRODEJ & LEDGER)
@@ -3464,12 +4006,12 @@ class CzechInvestorApp:
                         divs_last = hist_divs[hist_divs.index.year == current_year - 1]
                         
                         total_div_local = sum(divs_current)
-                        confirmed_months = [d.date().month for d in divs_current.index]
+                        confirmed_months = [d.month for d in divs_current.index]
                         for d_date, amount in divs_last.items():
                             try: proj_date = d_date.date().replace(year=current_year)
                             except: proj_date = d_date.date() + timedelta(days=365)
                             
-                            if proj_date.month not in confirmed_months and today_date <= proj_date <= end_of_year:
+                            if proj_date.month not in confirmed_months:
                                 total_div_local += amount
                         
                         curr_price = float(data[t].iloc[-1])
@@ -3583,6 +4125,21 @@ class CzechInvestorApp:
                 # 3. Sbalení všech 6 metrik do jednoho pole a odeslání do UI
                 b_m =[b_div, b_dd, b_growth, b_fdiv, b_fdd, b_fgrowth, b_vol * 100]
                 self.base_metrics_data = b_m # Uložíme pro potřeby kreslení grafu
+                
+                # Okamžitě propsat zjištěný reálný výnos i do Slideru a do paměti aplikace
+                self.last_nominal_yield = float(b_div / 100000.0)
+                if hasattr(self, 'dyn_floor_slider'):
+                    max_slider_val = round(self.last_nominal_yield * 100, 2)
+                    if max_slider_val < 0.5: max_slider_val = 5.0
+                    
+                    # Zjištění, zda nové reálné maximum nekleslo pod to, co je zrovna manuálně nastaveno
+                    current_slider_val = float(self.dyn_floor_slider.get())
+                    if current_slider_val > max_slider_val:
+                        self.root.after(0, lambda v=max_slider_val: [self.dyn_floor_slider.config(to=v), self.dyn_floor_slider.set(v)])
+                        self.dyn_yield_cap = max_slider_val
+                    else:
+                        self.root.after(0, lambda v=max_slider_val: self.dyn_floor_slider.config(to=v))
+                        
                 self.root.after(0, lambda m=b_m, bw=base_w_exact: [self._update_base_labels(m), self._update_risk_dashboard(bw, is_base=True)])
             
             # Načtení custom limitů z instance třídy (získané validátorem textových polí)
@@ -4287,9 +4844,16 @@ class CzechInvestorApp:
 
         # Aktualizace maxima slideru na záložce Nákup
         if hasattr(self, 'dyn_floor_slider'):
-            db_temp = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
-            nom_yield = sum(TARGETS.get(t, 0) * (db_temp.get(t, {}).get('yield', 0) / 100.0) for t in TARGETS.keys())
-            max_slider = round((nom_yield + 1) * 100, 2)
+            # MÍSTO STATICKÉ DATABÁZE POUŽIJEME ŽIVÁ DATA Z TUNERU
+            # new_w = váhy z vybrané simulace, self.tuner_stock_divs = pole živých dividendových výnosů
+            if hasattr(self, 'tuner_stock_divs') and len(self.tuner_stock_divs) == len(new_w):
+                nom_yield = float(np.dot(new_w, self.tuner_stock_divs))
+            else:
+                nom_yield = getattr(self, 'last_nominal_yield', 0.04)
+                
+            self.last_nominal_yield = nom_yield # Aktualizujeme paměť aplikace pro tooltipy a start
+            max_slider = round(nom_yield * 100, 2)
+            
             if max_slider < 0.5: max_slider = 5.0
             
             self.dyn_floor_slider.config(to=max_slider)
@@ -4297,7 +4861,7 @@ class CzechInvestorApp:
             # Ochrana: pokud nové maximum kleslo pod to, co měl uživatel zrovna nastaveno
             if float(self.dyn_floor_slider.get()) > max_slider:
                 self.dyn_floor_slider.set(max_slider)
-                self.dyn_yield_floor = max_slider
+                self.dyn_yield_cap = max_slider
                 self.save_data()
 
         messagebox.showinfo("Úspěch", "Nové cílové váhy byly úspěšně aplikovány a uloženy do souboru. Záložka Nákupu bude nyní počítat návrhy s těmito novými vahami.")
@@ -4378,12 +4942,13 @@ class CzechInvestorApp:
             fx = self.get_fx_rates()
             download_tickers = all_tickers + ["SPY"]
             
-            self.root.after(0, lambda: self.status_lbl.config(text="Stahuji dividendy...", fg="blue"))
+            self.root.after(0, lambda: self.status_lbl.config(text="Stahuji historii dividend...", fg="blue"))
             all_divs = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-                div_futures = {executor.submit(self._safe_get_dividends, t): t for t in all_tickers}
-                for fut in concurrent.futures.as_completed(div_futures):
-                    all_divs[div_futures[fut]] = fut.result()
+            for t in all_tickers:
+                # Kontrola, zda mezitím nevznikl novější požadavek (např. rychlý restart appky)
+                if getattr(self, 'dash_fetch_version', 0) != current_version: 
+                    return
+                all_divs[t] = self._safe_get_dividends(t)
             
             # Kontrola po stažení dividend (mohlo to trvat 10 vteřin)
             if getattr(self, 'dash_fetch_version', 0) != current_version: return
@@ -4892,6 +5457,66 @@ class CzechInvestorApp:
             if is_final: self.status_lbl.config(text=f"Aktualizováno: {datetime.now().strftime('%H:%M:%S')}", fg="green")
             est = self.calculate_tax_estimate()
             self.root.after(0, lambda: self.tax_estimate_lbl.config(text=f"Odhad daně za rok {datetime.now().year}: {est:,.0f} Kč".replace(',', ' ')))
+            
+            # --- TICHÝ PŘEPOČET DAT PRO DYNAMICKÝ TOOLTIP (textbox cílová hodnota pasivního příjmu) ---
+            self.last_portfolio_value_czk = total_portfolio_now
+            
+            temp_yield_sum = 0.0
+            db_temp = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+            for t in TARGETS.keys():
+                w = TARGETS.get(t, 0.0)
+                # Výchozí hodnota je statická z DB
+                dy = db_temp.get(t, {}).get('yield', 0.0) / 100.0
+                
+                # Zkusíme zpřesnit podle stažených dat (all_divs) a posledních cen
+                try:
+                    if t in hist_prices_raw.columns:
+                        price = float(hist_prices_raw[t].iloc[-1])
+                        if t.endswith(".L"): 
+                            price /= 100.0
+                        
+                        if price > 0 and t in all_divs:
+                            h_divs = all_divs[t]
+                            if not h_divs.empty:
+                                current_year = datetime.now().year
+                                divs_curr = h_divs[h_divs.index.year == current_year]
+                                divs_last = h_divs[h_divs.index.year == current_year - 1]
+                                
+                                total_div = sum(divs_curr)
+                                conf_months = [d.month for d in divs_curr.index]
+                                for d_date, amt in divs_last.items():
+                                    if d_date.month not in conf_months:
+                                        total_div += amt
+                                        
+                                if total_div > 0:
+                                    # U britských akcií musíme i dividendu převést z pencí na libry
+                                    if t.endswith(".L"):
+                                        total_div /= 100.0
+                                    calc_dy = total_div / price
+                                    if 0 < calc_dy <= 0.25:
+                                        dy = calc_dy
+                except:
+                    pass
+                temp_yield_sum += w * dy
+                
+            self.last_nominal_yield = temp_yield_sum if temp_yield_sum > 0 else 0.04            
+
+            # --- DYNAMICKÁ AKTUALIZACE SLIDERU NA ZÁLOŽCE NÁKUP ---
+            if hasattr(self, 'dyn_floor_slider'):
+                max_slider_val = round(self.last_nominal_yield * 100, 2)
+                if max_slider_val < 0.5: max_slider_val = 5.0
+                
+                # Zjištění, zda nové reálné maximum nekleslo pod hodnotu, kterou má uživatel zrovna nastavenou
+                current_slider_val = float(self.dyn_floor_slider.get())
+                if current_slider_val > max_slider_val:
+                    # Pokud ano, snížíme hodnotu slideru a uložíme novou konfiguraci
+                    self.root.after(0, lambda v=max_slider_val: [self.dyn_floor_slider.config(to=v), self.dyn_floor_slider.set(v)])
+                    self.dyn_yield_cap = max_slider_val
+                else:
+                    self.root.after(0, lambda v=max_slider_val: self.dyn_floor_slider.config(to=v))
+
+            # Zapíšeme přepočtené přesné tržní hodnoty na disk pro příští okamžitý start (použito v tooltipu)
+            self.save_data()
             
         except Exception as e:
             if current_version is not None and getattr(self, 'dash_fetch_version', 0) == current_version:
@@ -6309,6 +6934,7 @@ class CzechInvestorApp:
                 self.root.after(0, lambda: self.wise_qr_lbl.config(text="Nelze načíst obrázek.\nPoužijte tlačítko níže."))
             
         threading.Thread(target=fetch_qrs, daemon=True).start()
+
 
 # ==============================================================================
 # SPUŠTĚNÍ APLIKACE

@@ -40,7 +40,7 @@ Zcela unikátní dvouproudá optimalizace (minulost vs. budoucnost).
 * **Ochrana před value traps:** Vestavěný "účetní rozum" filtruje nesmyslné hodnoty payout ratií a snižuje rating firmám, které si na dividendu půjčují.
 * **Daňová brzda:** Grafy automaticky vizualizují ztrátu na složeném úročení způsobenou srážkovou 15% daní z dividend pro férové srovnání s ETF.
 
-### 🏦 Správa ledgeru (FIFO)
+### 🏦 Správa ledgeru (FIFO) a napojení na brokera
 Striktní evidence nákupů a prodejů s respektem k lokální legislativě a poplatkům.
 * **IBKR Import (activity statement):** Načtěte CSV od brokera Interactive Brokers a aplikace automaticky spáruje všechny nákupy, zaznamená prodeje metodou FIFO, načte přijaté dividendy (včetně srážkových daní) a provede hloubkový audit vašich otevřených pozic.
 * **Optimalizace poplatků brokera:** Algoritmus při nákupu hlídá "minimum trade size" (např. IBKR Tiered minimum 0.35 USD / 1.00 GBP) a brání nesmyslným mikro-nákupům, které by spolkly velké procento na poplatcích.
@@ -56,7 +56,22 @@ Konec ručního vyplňování a počítání britských pencí.
 
 ---
 
-## 3. Investiční logika a rizika
+## 3. Pokročilé životní fáze a prediktivní modelování
+
+### 🔄 Životní cyklus portfolia a dynamický glide-path
+Aplikace řeší tzv. *"cliff-edge risk"* (skokové rebalanční riziko při dosažení cílové roční dividendové renty). Namísto tvrdého binárního přepnutí z růstových akcií na dividendové v den dosažení požadovaného pasivního příjmu z portfolia implementuje plynulou přechodovou křivku (glide-path):
+* **Fáze 1 (akumulace, 0 - 50 % cíle):** Dividendový výnos portfolia je tlumen nastaveným limitem na posuvníku. Nákupy jsou prioritně směrovány do podhodnocených růstových akcií pro maximální akumulaci kapitálu.
+* **Fáze 2 (glide-path, 50 - 100 % cíle):** Jakmile portfolio dosáhne 50 % hodnoty potřebné k pokrytí cílové renty, aplikace začne automaticky a plynule zvedat povolený dividendový strop podle kubické křivky (pozvolný start, strmější konec). Nákupy se plynule přesouvají k dividendovým titulům, aby v den dosažení cíle bylo portfolio vybalancováno bez nutnosti prodejů.
+* **Fáze 3 (renta, 100 % a více):** Cíl je splněn. Brzda dividendového výnosu se trvale vypíná a portfolio prioritizuje čisté cash-flow pro výplatu renty.
+
+### 📈 Robustní Time-To-Target (TTT) a analýza chování
+Při najetí myší nad políčko **"Cílový pasivní příjem"** aplikace zobrazí interaktivní tooltip s kompletní stochastickou predikcí založenou na reálných datech uživatele:
+* **Behaviorální analýza vkladů (IQR filtr):** Aplikace seskupí historii nákupů v JSON ledgeru podle měsíců. Pomocí mezikvartilového rozpětí (IQR) automaticky identifikuje a odfiltruje jednorázové anomálie (např. mimořádné dědictví, prodej auta). Ze zbylých dat určí stabilní medián pravidelného měsíčního vkladu a pomocí lineární regrese spočítá trend jeho ročního navyšování.
+* **Kombinovaný tržní růst:** Výpočet budoucího zhodnocení kombinuje vážený pětiletý historický CAGR portfolia (váha 80 %) a konsenzus cílových cen analytiků z Yahoo Finance (váha 20 %).
+
+---
+
+## 4. Výchozí investiční mix a jeho rizika
 
 Výchozí nastavení databáze obsahuje portfolio o 24 pozicích. Jde o
 diverzifikovanou **"All-Weather Dividend Growth"** strategii kombinující
@@ -83,7 +98,7 @@ cash-flow.
 
 ---
 
-## 4. Automatizace: Plánovač úloh Windows
+## 5. Automatizace: plánovač úloh Windows
 
 Pro disciplinované investování doporučujeme nastavit automatické spouštění aplikace v den, kdy provádíte nákupy (např. 1. den v měsíci).
 
@@ -99,6 +114,6 @@ Pro disciplinované investování doporučujeme nastavit automatické spouštěn
 
 ---
 
-## 5. Důležité právní upozornění
+## 6. Důležité právní upozornění
 
-*Tato aplikace je určena výhradně pro edukační a analytické účely. Autor nenese žádnou odpovědnost za případné finanční ztráty vzniklé investováním na základě simulací v tomto softwaru. Daňový modul generuje podklady na základě aktuálně platných zákonů ČR (ke stažení jednotných kurzů 2025/2026), uživatel by si však měl finální výpočty a nárok na daňové odpočty vždy ověřit u certifikovaného daňového poradce.*
+*Tato aplikace je určena výhradně pro edukační a analytické účely. Autor nenese žádnou odpovědnost za případné finanční ztráty vzniklé investováním na základě simulací v tomto softwaru. Daňový modul generuje podklady na základě aktuálně platných zákonů ČR a jednotných kurzů vydaných MF ČR, uživatel by si však měl finální výpočty a nárok na daňové odpočty vždy ověřit u certifikovaného daňového poradce.*

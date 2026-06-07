@@ -96,7 +96,25 @@
     </div>
 </div>
 
-<h2>3. Investiční logika a rizika</h2>
+<h2>3. Pokročilé životní fáze a prediktivní modelování</h2>
+<div class="card">
+    <h3>🔄 Životní cyklus portfolia a dynamický glide-path</h3>
+    <p>Aplikace řeší tzv. <i>"cliff-edge risk"</i> (skokové rebalanční riziko při dosažení cílové roční dividendové renty). Namísto tvrdého binárního přepnutí z růstových akcií na dividendové v den dosažení požadovaného padsivního příjmu z portfolia implementuje plynulou přechodovou křivku (glide-path):</p>
+    <ul>
+        <li><strong>Fáze 1 (akumulace, 0 - 50 % cíle):</strong> Dividendový výnos portfolia je tlumen nastaveným limitem na posuvníku. Nákupy jsou prioritně směrovány do podhodnocených růstových akcií pro maximální akumulaci kapitálu.</li>
+        <li><strong>Fáze 2 (glide-path, 50 - 100 % cíle):</strong> Jakmile portfolio dosáhne 50 % hodnoty potřebné k pokrytí cílové renty, aplikace začne automaticky a plynule zvedat povolený dividendový strop podle kubické křivky (pozvolný start, strmější konec). Nákupy se plynule přesouvají k dividendovým titulům, aby v den dosažení cíle bylo portfolio vybalancováno bez nutnosti prodejů.</li>
+        <li><strong>Fáze 3 (renta, 100 % a více):</strong> Cíl je splněn. Brzda dividendového výnosu se trvale vypíná a portfolio prioritizuje čisté cash-flow pro výplatu renty.</li>
+    </ul>
+
+    <h3>📈 Robustní Time-To-Target (TTT) a analýza chování</h3>
+    <p>Při najetí myší nad políčko <strong>"Cílový pasivní příjem"</strong> aplikace zobrazí interaktivní tooltip s kompletní stochastickou predikcí založenou na reálných datech uživatele:</p>
+    <ul>
+        <li><strong>Behaviorální analýza vkladů (IQR filtr):</strong> Aplikace seskupí historii nákupů v JSON ledgeru podle měsíců. Pomocí mezikvartilového rozpětí (IQR) automaticky identifikuje a odfiltruje jednorázové anomálie (např. mimořádné dědictví, prodej auta). Ze zbylých dat určí stabilní medián pravidelného měsíčního vkladu a pomocí lineární regrese spočítá trend jeho ročního navyšování.</li>
+        <li><strong>Kombinovaný tržní růst:</strong> Výpočet budoucího zhodnocení kombinuje vážený pětiletý historický CAGR portfolia (váha 80 %) a konsenzus cílových cen analytiků z Yahoo Finance (váha 20 %).</li>
+    </ul>
+</div>
+
+<h2>4. Výchozí investiční mix a jeho rizika</h2>
 <div class="card">
     <p>Výchozí nastavení databáze obsahuje portfolio o <strong>24 pozicích</strong>. Jde o diverzifikovanou <strong>"All-Weather Dividend Growth"</strong> strategii kombinující americký technologický růst, průmyslové giganty a masivní britsko-americké cash-flow.</p>
     
@@ -154,7 +172,7 @@
     </div>
 </div>
 
-<h2>4. Automatizace: plánovač úloh Windows</h2>
+<h2>5. Automatizace: plánovač úloh Windows</h2>
 <div class="card">
     <p>Pro disciplinované investování doporučujeme nastavit automatické spouštění aplikace v den, kdy provádíte nákupy (např. 1. den v měsíci).</p>
     <ol>
@@ -170,7 +188,7 @@
     </div>
 </div>
 
-<h2>5. Důležité právní upozornění</h2>
+<h2>6. Důležité právní upozornění</h2>
 <div class="card" style="border-top-color: #636e72;">
     <p style="font-size: 0.9em; color: #636e72;">
         Tato aplikace je určena výhradně pro edukační a analytické účely. Autor nenese žádnou odpovědnost za případné finanční ztráty vzniklé investováním na základě simulací v tomto softwaru. Daňový modul generuje podklady na základě aktuálně platných zákonů ČR a jednotných kurzů vydaných MF ČR, uživatel by si však měl finální výpočty a nárok na daňové odpočty vždy ověřit u certifikovaného daňového poradce.
