@@ -541,6 +541,11 @@ class CzechInvestorApp:
                     # Načtení nastavení řazení v Editoru (výchozí "metrics")
                     self.editor_sort_mode = data.get("editor_sort_mode", "metrics")
                     
+                    # Načtení nastavení dynamického cílování portfolia
+                    self.dyn_targets_enabled = data.get("dyn_targets_enabled", False)
+                    self.dyn_yield_floor = float(data.get("dyn_yield_floor", 3.0))
+                    self.dyn_abs_div = float(data.get("dyn_abs_div", 500000))
+
                     return ledger, history, rates
             except Exception as e: 
                 print(f"Varování při načítání JSON: {e}")
@@ -548,6 +553,9 @@ class CzechInvestorApp:
         self.ethical_filters = {k: True for k in TAGS}
         self.custom_min_w = MIN_W
         self.custom_max_w = MAX_W
+        self.dyn_targets_enabled = False
+        self.dyn_yield_floor = 3.0
+        self.dyn_abs_div = 500000
         return {t:[] for t in TARGETS},[], {}
 
     def save_data(self):
@@ -563,7 +571,10 @@ class CzechInvestorApp:
             "real_dividends": getattr(self, 'real_dividends',[]),
             "fee_percent": getattr(self, 'fee_percent', 0.5),
             "optimize_fees_enabled": getattr(self, 'optimize_fees_enabled', True),
-            "editor_sort_mode": getattr(self, 'editor_sort_mode', 'metrics')
+            "editor_sort_mode": getattr(self, 'editor_sort_mode', 'metrics'),
+            "dyn_targets_enabled": getattr(self, 'dyn_targets_enabled', False),
+            "dyn_yield_floor": getattr(self, 'dyn_yield_floor', 3.0),
+            "dyn_abs_div": getattr(self, 'dyn_abs_div', 500000)
         }
         with open(PORTFOLIO_FILE, "w") as f: json.dump(data, f, indent=4)
 
@@ -1002,6 +1013,69 @@ class CzechInvestorApp:
 
         tk.Label(top_bar, text="%", font=("Arial", 12), bg="#f0f2f5").pack(side=tk.LEFT)
 
+        # Rámeček pro Dynamické řízení portfolia
+        dyn_frame = tk.Frame(calc_frame, bg="#E3F2FD", padx=5, pady=5, relief=tk.RIDGE, borderwidth=1)
+        dyn_frame.pack(side=tk.TOP, fill=tk.X, pady=(5, 5))
+        
+        self.dyn_opt_var = tk.BooleanVar(value=getattr(self, 'dyn_targets_enabled', False))
+        self.cb_dyn_opt = tk.Checkbutton(dyn_frame, text="Dynamicky řídit dividendový výnos", 
+                                         variable=self.dyn_opt_var, font=("Arial", 12, "bold"), bg="#E3F2FD",
+                                         command=self._on_dyn_opt_change)
+        self.cb_dyn_opt.pack(side=tk.LEFT, padx=5)
+        
+        # Tooltip pro hlavní Checkbox
+        tt_main = ("Pokud je zapnuto, aplikace automaticky tlumí nákupy akcií s vysokou dividendou v případě,\n"
+                   "že portfolio plní vaše finanční cíle. Veškeré ušetřené peníze přesměruje do růstových akcií.\n"
+                   "Tím zabrání vzniku 'pasti', kdy byste vlivem vysokých cen růstových akcií nakupovali už jen dividendové.")
+        self.cb_dyn_opt.bind("<Enter>", lambda e: self._show_tooltip(tt_main))
+        self.cb_dyn_opt.bind("<Leave>", lambda e: self._hide_tooltip())
+
+        tk.Label(dyn_frame, text=" |  Min. yield (polštář):", font=("Arial", 12), bg="#E3F2FD").pack(side=tk.LEFT)
+        
+        self.dyn_floor_slider = tk.Scale(dyn_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL, 
+                                         length=150, bg="#E3F2FD", font=("Arial", 12))
+        self.dyn_floor_slider.set(getattr(self, 'dyn_yield_floor', 3.0))
+        self.dyn_floor_slider.pack(side=tk.LEFT, padx=5)
+        # Připojení eventu na uvolnění tlačítka myši (netrhá to aplikaci při tažení)
+        self.dyn_floor_slider.bind("<ButtonRelease-1>", self._on_dyn_opt_change)
+
+        # Dynamický výpočet maxima slideru podle aktuálních vah
+        db_temp = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+        nom_yield = sum(TARGETS.get(t, 0) * (db_temp.get(t, {}).get('yield', 0) / 100.0) for t in TARGETS.keys())
+        max_slider = round((nom_yield + 0.001) * 100, 2)
+        if max_slider < 0.5: max_slider = 5.0 # Fallback pro úplně prázdné portfolio
+        self.dyn_floor_slider.config(to=max_slider)
+
+        tk.Label(dyn_frame, text="%", font=("Arial", 11), bg="#E3F2FD").pack(side=tk.LEFT)
+        
+        # Tooltip pro Slider
+        tt_slider = ("Ochranný polštář do krize (dividend yield floor).\n"
+                     "Určuje absolutní minimum úročení portfolia. I když budou akcie raketově růst,\n"
+                     "aplikace nikdy neutlumí dividendy tak silně, aby váš roční výnos klesl pod\n"
+                     "tuto hodnotu. Toto nastavení se projeví až po překročení cílového pasivního příjmu.")
+        self.dyn_floor_slider.bind("<Enter>", lambda e: self._show_tooltip(tt_slider))
+        self.dyn_floor_slider.bind("<Leave>", lambda e: self._hide_tooltip())
+
+        tk.Label(dyn_frame, text="  |  Cílový pasivní příjem:", font=("Arial", 12), bg="#E3F2FD").pack(side=tk.LEFT, padx=(10, 0))
+        
+        self.dyn_abs_entry = tk.Entry(dyn_frame, font=("Arial", 12), width=10, justify="right")
+        self.dyn_abs_entry.insert(0, str(int(getattr(self, 'dyn_abs_div', 300000))))
+        self.dyn_abs_entry.pack(side=tk.LEFT, padx=5)
+        self.dyn_abs_entry.bind("<Return>", self._on_dyn_opt_change)
+        tk.Label(dyn_frame, text="Kč / rok", font=("Arial", 12), bg="#E3F2FD").pack(side=tk.LEFT)
+        
+        # Tooltip pro Absolutní cíl
+        tt_abs = ("Vaše cílová částka pro čistý roční pasivní dividendový příjem. Jakmile vaše portfolio vyroste\n"
+                  "natolik, že mu k vyplacení této částky stačí nižší procentuální dividendový yield než je\n"
+                  "nastavený polštář, aplikace začne dotovat růstové akcie na úkor dividendových.")
+        self.dyn_abs_entry.bind("<Enter>", lambda e: self._show_tooltip(tt_abs))
+        self.dyn_abs_entry.bind("<Leave>", lambda e: self._hide_tooltip())
+
+        # Počáteční nastavení stavu (zešednutí) podle zaškrtávacího políčka
+        initial_state = tk.NORMAL if getattr(self, 'dyn_targets_enabled', False) else tk.DISABLED
+        self.dyn_floor_slider.config(state=initial_state)
+        self.dyn_abs_entry.config(state=initial_state)
+
         tree_container = tk.Frame(calc_frame, bg="#f0f2f5")
         tree_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
 
@@ -1100,6 +1174,35 @@ class CzechInvestorApp:
         if self.buy_tree.get_children() and self.btn_calc_buys['state'] == tk.NORMAL:
             self.start_calculate_buys()
 
+    def _on_dyn_opt_change(self, event=None):
+        """Uloží nastavení dynamických cílů, upraví UI a spustí přepočet."""
+        # 1. Přečtení aktuálního stavu Checkboxu
+        is_enabled = self.dyn_opt_var.get()
+        
+        # 2. Okamžitá změna stavu UI (zešednutí / odblokování)
+        new_state = tk.NORMAL if is_enabled else tk.DISABLED
+        if hasattr(self, 'dyn_floor_slider'):
+            self.dyn_floor_slider.config(state=new_state)
+        if hasattr(self, 'dyn_abs_entry'):
+            self.dyn_abs_entry.config(state=new_state)
+
+        # 3. Uložení hodnot
+        try:
+            self.dyn_abs_div = float(self.dyn_abs_entry.get().replace(' ', '').replace(',', '.'))
+            if self.dyn_abs_div < 0.0: self.dyn_abs_div = 0.0
+        except ValueError:
+            self.dyn_abs_div = 500000.0
+            
+        self.dyn_yield_floor = float(self.dyn_floor_slider.get())
+        self.dyn_targets_enabled = is_enabled
+        
+        self.save_data()
+        
+        # 4. Pokud je funkce zapnuta a zrovna je aktivní návrh, automaticky ho přepočítáme
+        # (při vypnutí funkce ho také přepočítáme, aby se vrátil na nominální váhy)
+        if hasattr(self, 'buy_tree') and self.buy_tree.get_children() and self.btn_calc_buys['state'] == tk.NORMAL:
+            self.start_calculate_buys()
+
     def start_calculate_buys(self):
         """Příprava před výpočtem - zamkne tlačítka a vyčistí tabulku v hlavním vlákně."""
         self.btn_calc_buys.config(state=tk.DISABLED)
@@ -1157,8 +1260,122 @@ class CzechInvestorApp:
                 except Exception:
                     current_holdings_val[t] = 0
 
+           # Skutečná hodnota portfolia po zainvestování vložené částky (potřebné pro dynamický cíl)
+            projected_total_val = total_current_portfolio_val + invest
+
+            # DYNAMICKÉ ŘÍZENÍ DIVIDENDOVÉHO VÝNOSU (EXPONENCIÁLNÍ BRZDA)
+            effective_targets = TARGETS.copy()
+            if getattr(self, 'dyn_targets_enabled', False) and projected_total_val > 0:
+                try:
+                    # 1. Zjištění limitů z UI (čte přímo aktuální text v políčku, i bez stisku Enter)
+                    yield_floor = float(self.dyn_floor_slider.get()) / 100.0
+                    try:
+                        abs_target_net_czk = float(self.dyn_abs_entry.get().replace(' ', '').replace(',', '.'))
+                        if abs_target_net_czk < 0.0: abs_target_net_czk = 0.0
+                    except ValueError:
+                        abs_target_net_czk = getattr(self, 'dyn_abs_div', 500000.0)
+                        
+                    # Přepočet požadované čisté částky na hrubou (zohlednění 15% daně)
+                    abs_target_gross_czk = abs_target_net_czk / 0.85
+                    
+                    required_yield_for_target = abs_target_gross_czk / projected_total_val
+                    target_yield_limit = max(yield_floor, required_yield_for_target)
+                    
+                    # 2. Sestavení ŽIVÝCH výnosů (včetně aktuální tržní ceny z yfinance)
+                    db = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+                    stock_yields = {}
+                    
+                    today_date = datetime.now().date()
+                    current_year = today_date.year
+                    
+                    for t in TARGETS.keys():
+                        meta = db.get(t, {})
+                        if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
+                            stock_yields[t] = 0.0
+                        else:
+                            # Výchozí hodnota z databáze (fallback)
+                            dy = meta.get("yield", 0.0) / 100.0
+                            try:
+                                # Zpřesnění výpočtu podle aktuální stažené ceny
+                                curr_price = float(prices_data[t])
+                                if t.endswith(".L"): curr_price /= 100.0
+                                
+                                if curr_price > 0:
+                                    hist_divs = self._safe_get_dividends(t)
+                                    if not hist_divs.empty:
+                                        divs_curr = hist_divs[hist_divs.index.year == current_year]
+                                        divs_last = hist_divs[hist_divs.index.year == current_year - 1]
+                                        
+                                        total_div = sum(divs_curr)
+                                        conf_months = [d.month for d in divs_curr.index]
+                                        for d_date, amt in divs_last.items():
+                                            if d_date.month not in conf_months:
+                                                total_div += amt
+                                                
+                                        if total_div > 0:
+                                            calc_dy = total_div / curr_price
+                                            # Sanity check: omezíme na max 25% (vyhne se chybám při reverse splitu)
+                                            if 0 < calc_dy <= 0.25: 
+                                                dy = calc_dy
+                            except Exception:
+                                pass
+                            stock_yields[t] = dy + 0.001
+                            
+                    # 3. Výpočet nominálního yieldu portfolia a dynamické MAXIMA pro slider
+                    nom_weights = np.array([TARGETS[t] for t in TARGETS.keys()])
+                    yields_array = np.array([stock_yields[t] for t in TARGETS.keys()])
+                    nom_portfolio_yield = np.sum(nom_weights * yields_array)
+                    
+                    # Okamžitá aktualizace slideru z hlavního vlákna (nepřepisuje vaši pozici, jen posouvá limit)
+                    max_slider_val = round(nom_portfolio_yield * 100, 2)
+                    if max_slider_val < 0.5: max_slider_val = 5.0
+                    self.root.after(0, lambda v=max_slider_val: self.dyn_floor_slider.config(to=v))
+                    
+                    # 4. Ochrana před matematickou nemožností
+                    # Nedovolíme cílovat pod nejmenší možný yield v portfoliu (s rezervou 0.5%, aby nám nevypadly růstové akcie s malou dividendou)
+                    min_possible_yield = np.min(yields_array[nom_weights > 0])
+                    safe_target_yield = max(target_yield_limit, min_possible_yield + 0.005)
+                    
+                    # 5. Aplikace exponenciální brzdy
+                    if nom_portfolio_yield > safe_target_yield:
+                        low, high = 0.0, 5000.0 # Zvýšený limit pro jemnější krok
+                        best_w = nom_weights
+                        
+                        for _ in range(60):
+                            k = (low + high) / 2.0
+                            decay_factors = np.exp(-k * yields_array)
+                            w_raw = nom_weights * decay_factors
+                            
+                            # Ochrana proti úplnému vynulování matematiky (Dělení nulou)
+                            if np.sum(w_raw) < 1e-10:
+                                high = k
+                                continue
+                                
+                            w_norm = w_raw / np.sum(w_raw) 
+                            simulated_yield = np.sum(w_norm * yields_array)
+                            
+                            if simulated_yield > safe_target_yield:
+                                low = k  # Potřebujeme víc brzdit
+                            else:
+                                high = k # Brzdíme moc
+                                best_w = w_norm
+                                
+                        # OCHRANA algoritmu Water-Filling před "mikro-vahami" (zabrání tabulce plné nul)
+                        best_w[best_w < 0.00001] = 0.0 # ignoruje váhy akcií menší než 0.001%
+                        if np.sum(best_w) > 0:
+                            best_w = best_w / np.sum(best_w)
+                        else:
+                            best_w = nom_weights # Fallback v případě fatální chyby
+                                
+                        # Propsání nových upravených vah do dočasného slovníku
+                        for i, t in enumerate(TARGETS.keys()):
+                            effective_targets[t] = float(best_w[i])
+                            
+                except Exception as e:
+                    print(f"[!] Chyba dynamického cílování: {e}")
+
             # OPTIMALIZACE POPLATKŮ
-            valid_targets = [w for w in TARGETS.values() if w > 0]
+            valid_targets = [w for w in effective_targets.values() if w > 0]
             min_target = min(valid_targets) if valid_targets else 1.0
             
             # 1. Získání limitů pro poplatky z UI
@@ -1191,7 +1408,7 @@ class CzechInvestorApp:
                 for _ in range(50):
                     mid = (low + high) / 2.0
                     required_cash = 0.0
-                    for t, target in TARGETS.items():
+                    for t, target in effective_targets.items():
                         if t in banned_from_buy: continue # Tuto akcii už nenakupujeme
                         ideal_val = mid * target
                         curr_val = current_holdings_val.get(t, 0.0)
@@ -1203,7 +1420,7 @@ class CzechInvestorApp:
                 
                 # Zjištění alokací z nalezeného virtual_total
                 temp_allocs = {}
-                for t, target in TARGETS.items():
+                for t, target in effective_targets.items():
                     if t in banned_from_buy:
                         temp_allocs[t] = 0.0
                     else:
@@ -1248,8 +1465,8 @@ class CzechInvestorApp:
             info_data_temp = {} 
             
             # 4. Formátování řádků pro UI
-            for t, target in TARGETS.items():
-                if target <= 0: continue
+            for t, target in effective_targets.items():
+                if target <= 0.001: continue
                 
                 try:
                     cur = self.get_currency_for_ticker(t)
@@ -1273,8 +1490,15 @@ class CzechInvestorApp:
                         if t in banned_from_buy:
                             info_data_temp[t] = {"type": "fee", "min_req": mts_czk[t], "currency": cur}
                         elif excess_czk > 50 and price_in_czk > 0:
-                            excess_qty = excess_czk / price_in_czk
-                            info_data_temp[t] = {"type": "excess", "qty": excess_qty, "czk": excess_czk}
+                            if not getattr(self, 'dyn_targets_enabled', False):
+                                # akcie s tooltipem upozorňujícím na nadbytek v portfoliu ukazujeme jen tehdy,
+                                # pokud neprovádíme dynamické změny nákupních vah podle dividendového cíle
+                                excess_qty = excess_czk / price_in_czk
+                                info_data_temp[t] = {"type": "excess", "qty": excess_qty, "czk": excess_czk}
+                            else:
+                                continue
+                        else:
+                            continue # akcie, u kterých bychom kupovali méně než 0,001 kusů, ignorujeme
 
                     qty_rounded = round(qty, 3)
                     orig_val = qty_rounded * price
@@ -1368,18 +1592,18 @@ class CzechInvestorApp:
         if hasattr(self, '_buy_info_data') and ticker in self._buy_info_data:
             info = self._buy_info_data[ticker]
             
-            if info["type"] == "excess":
-                excess_str = f"{info['qty']:.3f}".replace('.', ',')
-                czk_str = f"{info['czk']:,.0f} Kč".replace(',', ' ')
-                msg = f"{ticker}\nℹ️ Nadbytek v portfoliu:\nDržíte o {excess_str} ks více,\nnež odpovídá cílové váze\n(Hodnota nadbytku: {czk_str})."
-                self._show_tooltip(msg)
-                
-            elif info["type"] == "fee":
+            if info["type"] == "fee":
                 min_req = f"{info['min_req']:,.0f} Kč".replace(',', ' ')
                 cur = info['currency']
                 fee_val = IBKR_MIN_FEE_GBP if cur == "GBP" else IBKR_MIN_FEE_USD
                 msg = f"{ticker}\n⚠️ Nákup zrušen kvůli poplatkům:\nAkcie je sice podvážená, ale aby\npoplatek ({fee_val} {cur}) nepřesáhl váš limit,\nmuseli byste nakoupit alespoň za {min_req}.\nPeníze byly přesunuty na další akcie."
                 self._show_tooltip(msg)
+            elif info["type"] == "excess" and info['czk'] > 10000 :
+                excess_str = f"{info['qty']:.3f}".replace('.', ',')
+                czk_str = f"{info['czk']:,.0f} Kč".replace(',', ' ')
+                msg = f"{ticker}\nℹ️ Nadbytek v portfoliu:\nDržíte o {excess_str} ks více,\nnež odpovídá cílové váze\n(Hodnota nadbytku: {czk_str})."
+                self._show_tooltip(msg)
+                
         else:
             self._hide_tooltip()
 
@@ -1777,7 +2001,7 @@ class CzechInvestorApp:
                     d = lot['date']
                     key = (t, d)
                     
-                    # Update FX (s OPRAVOU poškozených dat z minulé verze)
+                    # Update FX
                     if d in exact_fx[curr]: 
                         lot['fx_rate'] = exact_fx[curr][d]
                     elif lot.get('fx_rate', 23.0) < 15.0:
@@ -1796,7 +2020,7 @@ class CzechInvestorApp:
                 b_date = sale['buy_date']
                 s_date = sale['sell_date']
                 
-                # Update FX s OPRAVOU chyb z minula
+                # Update FX
                 if b_date in exact_fx[curr]: 
                     sale['buy_fx_rate'] = exact_fx[curr][b_date]
                 elif sale.get('buy_fx_rate', 23.0) < 15.0: 
@@ -4060,6 +4284,21 @@ class CzechInvestorApp:
                 # Změna stavového popisku
                 if hasattr(self, 'div_status_lbl'):
                     self.div_status_lbl.config(text="Čekám na přepočet...", fg="grey")
+
+        # Aktualizace maxima slideru na záložce Nákup
+        if hasattr(self, 'dyn_floor_slider'):
+            db_temp = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+            nom_yield = sum(TARGETS.get(t, 0) * (db_temp.get(t, {}).get('yield', 0) / 100.0) for t in TARGETS.keys())
+            max_slider = round((nom_yield + 1) * 100, 2)
+            if max_slider < 0.5: max_slider = 5.0
+            
+            self.dyn_floor_slider.config(to=max_slider)
+            
+            # Ochrana: pokud nové maximum kleslo pod to, co měl uživatel zrovna nastaveno
+            if float(self.dyn_floor_slider.get()) > max_slider:
+                self.dyn_floor_slider.set(max_slider)
+                self.dyn_yield_floor = max_slider
+                self.save_data()
 
         messagebox.showinfo("Úspěch", "Nové cílové váhy byly úspěšně aplikovány a uloženy do souboru. Záložka Nákupu bude nyní počítat návrhy s těmito novými vahami.")
 
