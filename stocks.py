@@ -1545,13 +1545,22 @@ class CzechInvestorApp:
                 worst_violation_score = -float('inf')
                 
                 for t, alloc in temp_allocs.items():
-                    # Drobná tolerance 0.1 CZK kvůli float nepřesnostem
-                    if 0.1 < alloc < mts_czk[t]:
+                    # Prevence "falešných poplatkových penalizací" u nadvážených nebo nulových pozic.
+                    # Zjistíme cenu v CZK pro výpočet minimálního smysluplného nákupu (0.001 ks)
+                    cur = self.get_currency_for_ticker(t)
+                    price = float(prices_data[t])
+                    fx_rate = fx.get(cur, 1.0)
+                    if t.endswith(".L"): price /= 100.0
+                    price_in_czk = price * fx_rate
+                    
+                    # Nákup považujeme za matematicky reálný pouze tehdy, pokud by vedl k pořízení alespoň 0.001 ks
+                    min_meaningful_alloc = price_in_czk * 0.001
+                    
+                    # Poplatkovou penalizaci uplatníme pouze pro reálné nákupy (větší než 0.001 ks a zároveň pod limitem MTS)
+                    if min_meaningful_alloc < alloc < mts_czk[t]:
                         violation_found = True
                         
                         # Počítáme absolutní chybějící částku (shortfall).
-                        # Tím se přednostně vyřadí akcie (typicky UK), které by k dosažení
-                        # minimálního poplatku vyžadovaly "doplatit" nejvíce peněz.
                         shortfall = mts_czk[t] - alloc
                         
                         if shortfall > worst_violation_score:
@@ -1648,13 +1657,8 @@ class CzechInvestorApp:
                         if t in banned_from_buy:
                             info_data_temp[t] = {"type": "fee", "min_req": mts_czk[t], "currency": cur}
                         elif excess_czk > 50 and price_in_czk > 0:
-                            if not getattr(self, 'dyn_targets_enabled', False):
-                                # akcie s tooltipem upozorňujícím na nadbytek v portfoliu ukazujeme jen tehdy,
-                                # pokud neprovádíme dynamické změny nákupních vah podle dividendového cíle
-                                excess_qty = excess_czk / price_in_czk
-                                info_data_temp[t] = {"type": "excess", "qty": excess_qty, "czk": excess_czk}
-                            else:
-                                continue
+                            excess_qty = excess_czk / price_in_czk
+                            info_data_temp[t] = {"type": "excess", "qty": excess_qty, "czk": excess_czk}
                         else:
                             continue # akcie, u kterých bychom kupovali méně než 0,001 kusů, ignorujeme
 
@@ -1756,7 +1760,7 @@ class CzechInvestorApp:
                 fee_val = IBKR_MIN_FEE_GBP if cur == "GBP" else IBKR_MIN_FEE_USD
                 msg = f"{ticker}\n⚠️ Nákup zrušen kvůli poplatkům:\nAkcie je sice podvážená, ale aby\npoplatek ({fee_val} {cur}) nepřesáhl váš limit,\nmuseli byste nakoupit alespoň za {min_req}.\nPeníze byly přesunuty na další akcie."
                 self._show_tooltip(msg)
-            elif info["type"] == "excess" and info['czk'] > 10000 :
+            elif info["type"] == "excess" and info['czk'] > 1000 :
                 excess_str = f"{info['qty']:.3f}".replace('.', ',')
                 czk_str = f"{info['czk']:,.0f} Kč".replace(',', ' ')
                 msg = f"{ticker}\nℹ️ Nadbytek v portfoliu:\nDržíte o {excess_str} ks více,\nnež odpovídá cílové váze\n(Hodnota nadbytku: {czk_str})."
@@ -2375,6 +2379,8 @@ class CzechInvestorApp:
         deposit_growth = 0.03 # Výchozí konzervativní odhad růstu vkladů / inflace (3 %)
         
         all_purchases = []
+        
+        # 1. Zahrnutí aktuálně držených akcií (Ledger)
         for ticker, lots in self.ledger.items():
             p_factor = 0.01 if ticker.endswith('.L') else 1.0
             for lot in lots:
@@ -2387,6 +2393,26 @@ class CzechInvestorApp:
                     all_purchases.append({'date': dt, 'czk': czk_val})
                 except:
                     pass
+
+        # 2. Zahrnutí nákupů u akcií, které už byly prodány.
+        # Při prodeji (FIFO) se nákupní loty z Ledgeru fyzicky mažou. Pokud bychom je zde 
+        # nedohledali v historii prodejů, po masivním odprodeji by si appka myslela, 
+        # že jste v minulosti peníze vůbec nevkládali a predikce by se zhroutila.
+        for sale in self.sales_history:
+            ticker = sale.get('ticker', '')
+            p_factor = 0.01 if ticker.endswith('.L') else 1.0
+            try:
+                # Použijeme buy_date a buy_price, protože zkoumáme vaše vklady, nikoliv výdělky z prodeje
+                dt = pd.to_datetime(sale['buy_date'])
+                qty = float(sale['qty'])
+                price = float(sale['buy_price'])
+                
+                # U prodaných akcií máme chytře uložen původní buy_fx_rate
+                fx_rate = float(sale.get('buy_fx_rate', 23.0))
+                czk_val = qty * price * p_factor * fx_rate
+                all_purchases.append({'date': dt, 'czk': czk_val})
+            except:
+                pass
 
         # Pokud v ledgeru existují obchody, provedeme očištění dat
         if all_purchases:
@@ -2756,7 +2782,7 @@ class CzechInvestorApp:
         frame = tk.Frame(self.notebook, bg="#fff")
         self.notebook.add(frame, text="Prodej & Ledger")
 
-        # --- HORNÍ PANEL: Kalkulátor a Ruční editace ---
+        # --- HORNÍ PANEL: Kalkulátory a Ruční editace ---
         top_panel = tk.Frame(frame, bg="#fff")
         top_panel.pack(fill=tk.X, padx=10, pady=5)
 
@@ -2772,8 +2798,16 @@ class CzechInvestorApp:
         self.btn_calc_sale = tk.Button(calc_frame, text="Spočítat návrh", command=self.start_calculate_withdrawal, bg="#2E7D32", fg="white", font=("Arial", 12, "bold"))
         self.btn_calc_sale.grid(row=0, column=2, padx=10)
 
-        # 2. Ruční zadání / Úprava ceny
-        manual_frame = tk.LabelFrame(top_panel, text="2. Ruční zadání / Úprava ceny", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#E3F2FD")
+        # 2. NOVÝ: Kalkulátor pro rebalancování portfolia (zohledňuje nastavení brzdy)
+        rebal_frame = tk.LabelFrame(top_panel, text="2. Návrh prodeje pro rebalancování", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#FFF3E0")
+        rebal_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        tk.Label(rebal_frame, text="Srovná nadbytečné pozice s cílem.", font=("Arial", 11), bg="#FFF3E0").grid(row=0, column=0, padx=5)
+        self.btn_calc_rebal = tk.Button(rebal_frame, text="Spočítat rebalancování", command=self.start_calculate_rebalancing, bg="#E65100", fg="white", font=("Arial", 12, "bold"))
+        self.btn_calc_rebal.grid(row=0, column=1, padx=10)
+
+        # 3. Ruční zadání / Úprava ceny (přejmenováno z 2 na 3)
+        manual_frame = tk.LabelFrame(top_panel, text="3. Ruční zadání / Úprava ceny", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#E3F2FD")
         manual_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         tk.Label(manual_frame, text="Ticker:", font=("Arial", 12), bg="#E3F2FD").grid(row=0, column=0)
@@ -2788,7 +2822,6 @@ class CzechInvestorApp:
         self.sell_price_entry = tk.Entry(manual_frame, width=8, font=("Arial", 12))
         self.sell_price_entry.grid(row=0, column=5, padx=5)
         
-        # Bind pro odklepnutí klávesou Enter přímo v políčku ceny
         self.sell_price_entry.bind("<Return>", self._on_sell_price_enter)
 
         tk.Button(manual_frame, text="Stáhnout", command=self.fetch_sell_price, font=("Arial", 12)).grid(row=0, column=6, padx=5)
@@ -2883,6 +2916,249 @@ class CzechInvestorApp:
         self.sell_loading_timer = self.root.after(1000, lambda: self.show_loading(self.sell_loading_state, "Počítám optimální prodej..."))
         import threading
         threading.Thread(target=self.calculate_withdrawal, daemon=True).start()
+
+    def start_calculate_rebalancing(self):
+        """Spustí výpočet rebalančních prodejů ve vedlejším vlákně a dočasně zablokuje UI."""
+        self.btn_calc_rebal.config(state=tk.DISABLED)
+        # Vyčištění tabulky stagingu před novým návrhem
+        for i in self.sell_staging_tree.get_children(): 
+            self.sell_staging_tree.delete(i)
+        
+        # Nastavení časovače pro zobrazení loading ozubených kol
+        self.sell_loading_timer = self.root.after(1000, lambda: self.show_loading(self.sell_loading_state, "Počítám rebalancování z živých dat..."))
+        
+        import threading
+        threading.Thread(target=self.calculate_rebalancing, daemon=True).start()
+
+    def calculate_rebalancing(self):
+        """
+        Matematické jádro rebalancování. 
+        Stáhne živé kurzy a dividendy, zohlední případnou dividendovou brzdu,
+        vyhledá všechny nadhodnocené pozice a navrhne jejich prodej.
+        """
+        try:
+            fx = self.get_fx_rates()
+            all_tickers = list(TARGETS.keys())
+            
+            # 1. Stažení aktuálních tržních cen z Yahoo
+            try:
+                raw_data = self._safe_yf_download(all_tickers, period="5d")
+                if raw_data.empty or 'Close' not in raw_data:
+                    raise ValueError("Nepodařilo se stáhnout aktuální ceny z Yahoo Finance.")
+                
+                close_data = raw_data['Close']
+                if isinstance(close_data, pd.DataFrame):
+                    prices_data = close_data.ffill().iloc[-1]
+                else:
+                    prices_data = pd.Series({all_tickers[0]: close_data.ffill().iloc[-1]})
+            except Exception as e:
+                self.root.after(0, lambda err=e: messagebox.showerror("Chyba rebalancování", f"Chyba stahování dat: {err}"))
+                return
+
+            # Výpočet aktuální tržní hodnoty každé pozice a celku
+            current_holdings_val = {}
+            total_current_portfolio_val = 0.0
+
+            for t in all_tickers:
+                qty_held = sum(item['qty'] for item in self.ledger.get(t, []))
+                try:
+                    price = float(prices_data[t])
+                    cur = self.get_currency_for_ticker(t)
+                    fx_rate = fx.get(cur, 23.0)
+                    if t.endswith(".L"): price /= 100.0
+                    val_czk = qty_held * price * fx_rate
+                    current_holdings_val[t] = val_czk
+                    total_current_portfolio_val += val_czk
+                except Exception:
+                    current_holdings_val[t] = 0.0
+
+            # 2. Výpočet cílů se zohledněním dividendové brzdy (Glide-Path)
+            effective_targets = TARGETS.copy()
+            if getattr(self, 'dyn_targets_enabled', False) and total_current_portfolio_val > 0:
+                try:
+                    yield_cap = float(self.dyn_floor_slider.get()) / 100.0
+                    try:
+                        abs_target_net_czk = float(self.dyn_abs_entry.get().replace(' ', '').replace(',', '.'))
+                        if abs_target_net_czk < 0.0: abs_target_net_czk = 0.0
+                    except ValueError:
+                        abs_target_net_czk = getattr(self, 'dyn_abs_div', 500000.0)
+                        
+                    abs_target_gross_czk = abs_target_net_czk / 0.85
+                    
+                    db = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+                    stock_yields = {}
+                    
+                    today_date = datetime.now().date()
+                    current_year = today_date.year
+                    
+                    # Výpočet živých dividendových výnosů bez zaokrouhlovacích chyb britských akcií
+                    for t in TARGETS.keys():
+                        meta = db.get(t, {})
+                        if meta.get("sector") == "ETF" and meta.get("etf_type") == "Acc":
+                            stock_yields[t] = 0.0
+                        else:
+                            dy = meta.get("yield", 0.0) / 100.0
+                            try:
+                                curr_price = float(prices_data[t])
+                                if t.endswith(".L"): curr_price /= 100.0
+                                
+                                if curr_price > 0:
+                                    hist_divs = self._safe_get_dividends(t)
+                                    if not hist_divs.empty:
+                                        divs_curr = hist_divs[hist_divs.index.year == current_year]
+                                        divs_last = hist_divs[hist_divs.index.year == current_year - 1]
+                                        
+                                        total_div = sum(divs_curr)
+                                        conf_months = [d.month for d in divs_curr.index]
+                                        for d_date, amt in divs_last.items():
+                                            if d_date.month not in conf_months:
+                                                total_div += amt
+                                                
+                                        if total_div > 0:
+                                            if t.endswith(".L"):
+                                                total_div /= 100.0
+                                            calc_dy = total_div / curr_price
+                                            if 0 < calc_dy <= 0.25: 
+                                                dy = calc_dy
+                            except Exception:
+                                pass
+                            stock_yields[t] = dy + 0.001
+                            
+                    nom_weights = np.array([TARGETS[t] for t in TARGETS.keys()])
+                    yields_array = np.array([stock_yields[t] for t in TARGETS.keys()])
+                    nom_portfolio_yield = np.sum(nom_weights * yields_array)
+                    
+                    achievable_gross_div = nom_portfolio_yield * total_current_portfolio_val
+                    progress = achievable_gross_div / abs_target_gross_czk if abs_target_gross_czk > 0 else 1.0
+                    ramp_start = 0.5 
+
+                    if progress >= 1.0:
+                        target_yield_limit = nom_portfolio_yield + 1.0 
+                    elif progress <= ramp_start:
+                        target_yield_limit = yield_cap
+                    else:
+                        ramp_position = (progress - ramp_start) / (1.0 - ramp_start)
+                        alpha = ramp_position ** 3
+                        target_yield_limit = yield_cap + alpha * (nom_portfolio_yield - yield_cap)
+                    
+                    min_possible_yield = np.min(yields_array[nom_weights > 0])
+                    safe_target_yield = max(target_yield_limit, min_possible_yield + 0.004)
+                    
+                    if nom_portfolio_yield > safe_target_yield:
+                        low, high = 0.0, 5000.0
+                        best_w = nom_weights
+                        
+                        for _ in range(60):
+                            k = (low + high) / 2.0
+                            decay_factors = np.exp(-k * yields_array)
+                            w_raw = nom_weights * decay_factors
+                            
+                            if np.sum(w_raw) < 1e-10:
+                                high = k
+                                continue
+                                
+                            w_norm = w_raw / np.sum(w_raw) 
+                            simulated_yield = np.sum(w_norm * yields_array)
+                            
+                            if simulated_yield > safe_target_yield:
+                                low = k
+                            else:
+                                high = k
+                                best_w = w_norm
+                                
+                        best_w[best_w < 0.00001] = 0.0
+                        if np.sum(best_w) > 0:
+                            best_w = best_w / np.sum(best_w)
+                        else:
+                            best_w = nom_weights
+                                
+                        for i, t in enumerate(TARGETS.keys()):
+                            effective_targets[t] = float(best_w[i])
+                            
+                except Exception as e:
+                    print(f"[!] Chyba rebalančního cílování: {e}")
+
+            # 3. Identifikace nadhodnocených pozic
+            rows_to_insert = []
+            total_raised_czk = 0.0
+
+            for t, target in effective_targets.items():
+                ideal_val = total_current_portfolio_val * target
+                curr_val = current_holdings_val.get(t, 0.0)
+
+                # Porovnáme realitu s cílem (zavedeme toleranci 100 Kč kvůli drobným zaokrouhlením)
+                if curr_val > ideal_val + 100.0:
+                    excess_czk = curr_val - ideal_val
+                    try:
+                        price = float(prices_data[t])
+                        cur = self.get_currency_for_ticker(t)
+                        fx_rate = fx.get(cur, 23.0)
+                        
+                        price_factor = 100.0 if t.endswith(".L") else 1.0
+                        calc_price = price / price_factor 
+
+                        sell_qty = excess_czk / (calc_price * fx_rate) if calc_price > 0 else 0.0
+
+                        # Bezpečnostní pojistka: neprodáváme víc, než máme v Ledgeru
+                        held_qty = sum(item['qty'] for item in self.ledger.get(t, []))
+                        if sell_qty > held_qty:
+                            sell_qty = held_qty
+                        
+                        sell_czk = sell_qty * calc_price * fx_rate
+
+                        if sell_qty > 0.001:
+                            total_raised_czk += sell_czk
+                            rows_to_insert.append((
+                                t,
+                                f"{sell_qty:.3f}".replace('.', ','), 
+                                f"{calc_price:.2f}".replace('.', ','),
+                                f"{sell_czk:.0f}",
+                                "❌"
+                            ))
+                    except Exception as e:
+                        print(f"Chyba výpočtu odprodeje u {t}: {e}")
+
+            # 4. Aktualizace grafického rozhraní z hlavního vlákna
+            self.root.after(0, lambda: self._populate_rebal_staging(rows_to_insert, total_raised_czk))
+
+        finally:
+            self.root.after(0, self._cleanup_rebal_loading)
+
+    def _populate_rebal_staging(self, rows, total_raised_czk):
+        """Zapíše navržené prodeje do staging tabulky a předvyplní investiční pole na kartě nákupů."""
+        for row in rows:
+            self.sell_staging_tree.insert("", "end", values=row)
+            
+        # PŘEDVYPLNĚNÍ KARTY NÁKUPŮ:
+        # Částka, kterou odprodejem získáme, se ihned zaokrouhlená vloží do pole investic.
+        if hasattr(self, 'cash_entry'):
+            self.cash_entry.delete(0, tk.END)
+            self.cash_entry.insert(0, f"{total_raised_czk:.0f}")
+            
+        if rows:
+            messagebox.showinfo(
+                "Návrh rebalancování", 
+                f"Výpočet úspěšně dokončen!\n\n"
+                f"• Navrženo snížení u {len(rows)} nadhodnocených pozic.\n"
+                f"• Celkový odhadovaný výnos k reinvestování: {total_raised_czk:,.0f} Kč.\n\n"
+                f"Tato částka byla automaticky předvyplněna do pole 'Investice (Kč)' "
+                f"na kartě Nákup. Po schválení těchto prodejů stačí přejít tam a jedním kliknutím "
+                f"spočítat optimální rebalanční nákup.", parent=self.root
+            )
+        else:
+            messagebox.showinfo(
+                "Návrh rebalancování", 
+                "Vaše portfolio je dokonale vyvážené (žádná pozice nepřesahuje své cílové zastoupení).\n\n"
+                "Není třeba nic odprodávat.", parent=self.root
+            )
+
+    def _cleanup_rebal_loading(self):
+        """Uvolní časovač, skryje ozubená kola a odblokuje rebalanční tlačítko."""
+        if getattr(self, 'sell_loading_timer', None):
+            self.root.after_cancel(self.sell_loading_timer)
+            self.sell_loading_timer = None
+        self.hide_loading(self.sell_loading_state)
+        self.btn_calc_rebal.config(state=tk.NORMAL)
 
     def calculate_withdrawal(self):
         try:
