@@ -200,7 +200,7 @@ HHI_PENALTY = 2.0    # míra penalizace koncentrace portfolia při optimalizaci 
 
 # --- KONSTANTY PRO DYNAMICKOU BRZDU A DANĚ ---
 DEFAULT_TAX_RATE = 0.15               # Výchozí srážková daň z dividend a zisků (15 %)
-DYN_TARGET_MIN_WEIGHT_FRACTION = 0.20 # Mantinel (Soft-Floor): váha akcie nesmí klesnout pod 50 % původního cíle
+DYN_TARGET_MIN_WEIGHT_FRACTION = 0.25 # Mantinel (Soft-Floor): váha akcie nesmí klesnout pod 50 % původního cíle
 DYN_BRAKE_MAX_K = 5000.0              # Max hodnota k-faktoru v iteraci (horní mez)
 DYN_BRAKE_ITERATIONS = 60             # Počet iterací algoritmu Water-Filling
 GLIDE_PATH_RAMP_START = 0.5           # Procento splnění cíle, od kterého brzda začne polevovat (50 %)
@@ -1119,7 +1119,7 @@ class CzechInvestorApp:
         dyn_frame.pack(side=tk.TOP, fill=tk.X, pady=(5, 5))
         
         self.dyn_opt_var = tk.BooleanVar(value=getattr(self, 'dyn_targets_enabled', False))
-        self.cb_dyn_opt = tk.Checkbutton(dyn_frame, text="Dynamicky řídit dividendový výnos", 
+        self.cb_dyn_opt = tk.Checkbutton(dyn_frame, text="Dynamicky řídit dividendový výnos (dividendová brzda)", 
                                          variable=self.dyn_opt_var, font=("Arial", 12, "bold"), bg="#E3F2FD",
                                          command=self._on_dyn_opt_change)
         self.cb_dyn_opt.pack(side=tk.LEFT, padx=5)
@@ -4030,15 +4030,15 @@ class CzechInvestorApp:
         base_perf_frame = tk.Frame(base_frame, bg="#FFF8E1")
         base_perf_frame.pack(fill=tk.X)
         
-        tk.Label(base_perf_frame, text="Hrubá div:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=0, sticky="w", pady=2)
+        tk.Label(base_perf_frame, text="Hrubá dividenda:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=0, sticky="w", pady=2)
         self.lbl_base_div = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
         self.lbl_base_div.grid(row=0, column=1, sticky="w", padx=(0,15))
         
-        tk.Label(base_perf_frame, text="Bezpečná div:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=2, sticky="w", pady=2)
+        tk.Label(base_perf_frame, text="Bezpečná dividenda:", bg="#FFF8E1", font=("Arial", 12)).grid(row=0, column=2, sticky="w", pady=2)
         self.lbl_base_fdiv = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#0288D1", font=("Arial", 12, "bold"))
         self.lbl_base_fdiv.grid(row=0, column=3, sticky="w")
         
-        tk.Label(base_perf_frame, text="Pokles:", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=0, sticky="w", pady=2)
+        tk.Label(base_perf_frame, text="Historický pokles:", bg="#FFF8E1", font=("Arial", 12)).grid(row=1, column=0, sticky="w", pady=2)
         self.lbl_base_dd = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
         self.lbl_base_dd.grid(row=1, column=1, sticky="w", padx=(0,15))
         
@@ -4046,11 +4046,11 @@ class CzechInvestorApp:
         self.lbl_base_fdd = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#C62828", font=("Arial", 12, "bold"))
         self.lbl_base_fdd.grid(row=1, column=3, sticky="w")
 
-        tk.Label(base_perf_frame, text="Růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=0, sticky="w", pady=2)
+        tk.Label(base_perf_frame, text="Historický růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=0, sticky="w", pady=2)
         self.lbl_base_growth = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#2E7D32", font=("Arial", 12, "bold"))
         self.lbl_base_growth.grid(row=2, column=1, sticky="w", padx=(0,15))
         
-        tk.Label(base_perf_frame, text="Oček. růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=2, sticky="w", pady=2)
+        tk.Label(base_perf_frame, text="Očekávaný růst:", bg="#FFF8E1", font=("Arial", 12)).grid(row=2, column=2, sticky="w", pady=2)
         self.lbl_base_fgrowth = tk.Label(base_perf_frame, text="---", bg="#FFF8E1", fg="#0288D1", font=("Arial", 12, "bold"))
         self.lbl_base_fgrowth.grid(row=2, column=3, sticky="w")
 
@@ -4075,7 +4075,7 @@ class CzechInvestorApp:
         rb_base = tk.Radiobutton(toggle_frame, text="Výchozí", variable=self.chart_view_var, value="base", bg="white", font=("Arial", 12, "bold"), fg="grey", command=self._redraw_tuner_charts)
         rb_base.pack(side=tk.RIGHT, padx=5)
         
-        tk.Label(toggle_frame, text="Zobrazení:", bg="white", font=("Arial", 12)).pack(side=tk.RIGHT, padx=10)
+        tk.Label(toggle_frame, text="Zobrazení portfolia:", bg="white", font=("Arial", 12)).pack(side=tk.RIGHT, padx=10)
 
         self.fig_tune = plt.figure(figsize=(10, 8))
         self.fig_tune.patch.set_facecolor('white')
@@ -5098,6 +5098,33 @@ class CzechInvestorApp:
         self.ax_curve.plot(future_dates, expected_path, color='#F57F17', linestyle='-.', linewidth=2, label='Predikce růstu (střed)')
         self.ax_curve.fill_between(future_dates, lower_2sig, upper_2sig, color='#FFF59D', alpha=0.4, label='95% Trychtýř nejistoty')
         
+        # ---------------------------------------------------------------------
+        # FIXACE MĚŘÍTKA Y-OSY (Pro snadné porovnávání všech 4 scénářů)
+        # ---------------------------------------------------------------------
+        # 1. Extrakce extrémů z historických křivek
+        c_min = min(curve_base.min(), curve_base_decayed.min(), curve_new.min(), curve_new_decayed.min())
+        c_max = max(curve_base.max(), curve_base_decayed.max(), curve_new.max(), curve_new_decayed.max())
+        
+        # 2. Zohlednění S&P 500, pokud je vykreslen
+        if 'curve_spy' in locals() and 'spy_path' in locals():
+            c_min = min(c_min, curve_spy.min(), spy_path.min())
+            c_max = max(c_max, curve_spy.max(), spy_path.max())
+            
+        # 3. Zohlednění budoucích trychtýřů všech 4 scénářů
+        for w in [base_w, decayed_base_w, new_weights, decayed_new_w]:
+            drift = np.dot(w, self.tuner_upsides) / 252.0
+            vol = np.sqrt(np.dot(w.T, np.dot(self.tuner_cov_matrix.values, w))) / np.sqrt(252)
+            l_val = ((1 + daily_pct_changes.dot(w)).cumprod() * 100000).iloc[-1]
+            
+            f_low = l_val * np.exp((drift - 0.5 * vol**2) * 252 - 2 * vol * np.sqrt(252))
+            f_high = l_val * np.exp((drift - 0.5 * vol**2) * 252 + 2 * vol * np.sqrt(252))
+            c_min = min(c_min, f_low)
+            c_max = max(c_max, f_high)
+            
+        # Aplikace limitů (s 5% vizuálním polštářem nahoře i dole)
+        margin = (c_max - c_min) * 0.05
+        self.ax_curve.set_ylim(c_min - margin, c_max + margin)
+
         self.ax_curve.set_title(f"Simulace 100k Kč {pie_title_suffix}")
         self.ax_curve.grid(True, linestyle='--', alpha=0.5)
         self.ax_curve.legend(loc='upper left', fontsize=8)
@@ -5129,6 +5156,25 @@ class CzechInvestorApp:
             self.ax_bars.bar(x - width/2, bars_ref, width, label='Základ', color='lightgrey')
             self.ax_bars.bar(x + width/2, bars_main, width, label='Nové', color='#4CAF50')
         
+        # ---------------------------------------------------------------------
+        # FIXACE MĚŘÍTKA Y-OSY PRO SLOUPCOVÝ GRAF
+        # ---------------------------------------------------------------------
+        global_bars = []
+        for c in [curve_base, curve_base_decayed, curve_new, curve_new_decayed]:
+            for y in years:
+                sc = c[c.index.year == y]
+                if len(sc) > 0:
+                    global_bars.append(sc.iloc[-1] - sc.iloc[0])
+                    
+        if global_bars:
+            gb_min, gb_max = min(global_bars), max(global_bars)
+            if gb_min > 0: gb_min = 0  # Pokud jsme vždy v plusu, ať graf začíná přirozeně od 0
+            if gb_max < 0: gb_max = 0  # Pro případ globální ztráty (graf visící dolů)
+            
+            # Aplikace limitů (s 15% vizuálním polštářem)
+            pad = (gb_max - gb_min) * 0.15
+            self.ax_bars.set_ylim(gb_min - pad, gb_max + pad)
+
         self.ax_bars.set_xticks(x); self.ax_bars.set_xticklabels(lbls)
         self.ax_bars.set_title("Roční zisk [Kč]")
         self.ax_bars.grid(axis='y', linestyle='--', alpha=0.5); self.ax_bars.legend(fontsize=8)
