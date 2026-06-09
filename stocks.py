@@ -200,7 +200,7 @@ HHI_PENALTY = 2.0    # míra penalizace koncentrace portfolia při optimalizaci 
 
 # --- KONSTANTY PRO DYNAMICKOU BRZDU A DANĚ ---
 DEFAULT_TAX_RATE = 0.15               # Výchozí srážková daň z dividend a zisků (15 %)
-DYN_TARGET_MIN_WEIGHT_FRACTION = 0.50 # Mantinel (Soft-Floor): váha akcie nesmí klesnout pod 50 % původního cíle
+DYN_TARGET_MIN_WEIGHT_FRACTION = 0.20 # Mantinel (Soft-Floor): váha akcie nesmí klesnout pod 50 % původního cíle
 DYN_BRAKE_MAX_K = 5000.0              # Max hodnota k-faktoru v iteraci (horní mez)
 DYN_BRAKE_ITERATIONS = 60             # Počet iterací algoritmu Water-Filling
 GLIDE_PATH_RAMP_START = 0.5           # Procento splnění cíle, od kterého brzda začne polevovat (50 %)
@@ -1348,19 +1348,38 @@ class CzechInvestorApp:
             if np.any(active_mask):
                 toxic_yield[active_mask] -= np.min(toxic_yield[active_mask])
             
+            # Načtení uživatelského maxima z UI (ochrana proti přetečení vah)
+            max_limit = getattr(self, 'custom_max_w', MAX_W)
+            
             for _ in range(DYN_BRAKE_ITERATIONS):
                 k = (low + high) / 2.0
                 decay_factors = np.exp(-k * toxic_yield)
                 w_raw = nom_weights * decay_factors
                 
-                # Ochranný mantinel
+                # Zajištění, že nespadneme pod podlahu
                 w_raw = np.maximum(w_raw, min_allowed_weights)
                 
                 if np.sum(w_raw) < 1e-10:
                     high = k
                     continue
                     
-                w_norm = w_raw / np.sum(w_raw) 
+                # ---------------------------------------------------------
+                # MATEMATICKÁ PROJEKCE S DODRŽENÍM MAXIMÁLNÍCH LIMITŮ
+                # ---------------------------------------------------------
+                # Uvolněný kapitál přeléváme do růstových akcií. Musíme ale zaručit,
+                # že žádná akcie (např. TRIG) nepřeteče přes uživatelsky nastavený limit.
+                w_norm = w_raw / np.sum(w_raw)
+                lambda_shift = 0.0
+                for _ in range(20):
+                    w_clipped = np.clip(w_norm + lambda_shift, min_allowed_weights, max_limit)
+                    diff = 1.0 - np.sum(w_clipped)
+                    if abs(diff) < 1e-7:
+                        break
+                    lambda_shift += diff / len(nom_weights)
+                    
+                w_norm = np.clip(w_norm + lambda_shift, min_allowed_weights, max_limit)
+                # ---------------------------------------------------------
+                
                 simulated_yield = np.sum(w_norm * yields_array)
                 
                 if simulated_yield > safe_target_yield:
@@ -4886,17 +4905,36 @@ class CzechInvestorApp:
             if np.any(active_mask):
                 toxic_yield[active_mask] -= np.min(toxic_yield[active_mask])
             
+            # Načtení uživatelského maxima z UI (ochrana proti přetečení vah)
+            max_limit = getattr(self, 'custom_max_w', MAX_W)
+            
             for _ in range(DYN_BRAKE_ITERATIONS):
                 k = (low + high) / 2.0
                 decay_factors = np.exp(-k * toxic_yield)
                 w_raw = w_nom * decay_factors
                 
+                # Zajištění, že nespadneme pod podlahu
                 w_raw = np.maximum(w_raw, min_allowed_weights)
                 
                 if np.sum(w_raw) < 1e-10:
                     high = k
                     continue
+                    
+                # ---------------------------------------------------------
+                # MATEMATICKÁ PROJEKCE S DODRŽENÍM MAXIMÁLNÍCH LIMITŮ
+                # ---------------------------------------------------------
                 w_norm = w_raw / np.sum(w_raw)
+                lambda_shift = 0.0
+                for _ in range(20):
+                    w_clipped = np.clip(w_norm + lambda_shift, min_allowed_weights, max_limit)
+                    diff = 1.0 - np.sum(w_clipped)
+                    if abs(diff) < 1e-7:
+                        break
+                    lambda_shift += diff / len(w_nom)
+                    
+                w_norm = np.clip(w_norm + lambda_shift, min_allowed_weights, max_limit)
+                # ---------------------------------------------------------
+                
                 simulated_yield = np.sum(w_norm * yields_array)
                 
                 if simulated_yield > safe_target_yield:
