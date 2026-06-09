@@ -3450,13 +3450,13 @@ class CzechInvestorApp:
         self.div_mode_var = tk.StringVar(value="real")
         
         # při kliknutí na radio button se ihned spustí vlákno na pozadí, ukáže se loading a data se přegenerují.
-        self.rb_div_target = tk.Radiobutton(ctrl_panel, text="Teoretické cílové portfolio (Dle nastavených vah)", 
+        self.rb_div_target = tk.Radiobutton(ctrl_panel, text="Teoretické cílové portfolio (dle nastavených vah)", 
                                             variable=self.div_mode_var, value="target", 
                                             bg="#E8F5E9", font=("Arial", 12),
                                             command=self.start_refresh_dividends)
         self.rb_div_target.pack(side=tk.LEFT, padx=10)
         
-        self.rb_div_real = tk.Radiobutton(ctrl_panel, text="Reálné portfolio (Ledger)", 
+        self.rb_div_real = tk.Radiobutton(ctrl_panel, text="Reálné portfolio (ledger)", 
                                           variable=self.div_mode_var, value="real", 
                                           bg="#E8F5E9", font=("Arial", 12),
                                           command=self.start_refresh_dividends)
@@ -3593,7 +3593,50 @@ class CzechInvestorApp:
         theoretical_qtys = {}
         sim_val = total_value_czk if total_value_czk > 1000 else 100000.0
         
-        for t, weight in TARGETS.items():
+        # --- ZÍSKÁNÍ PŘESNÝCH DAT (Pro případnou dynamickou brzdu) ---
+        nom_weights = np.array([TARGETS[t] for t in TARGETS.keys()])
+        yields_list = []
+        growths_list = []
+        db = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
+        
+        for t in TARGETS.keys():
+            if getattr(self, 'tuner_data_loaded', False) and hasattr(self, 'ordered_tickers') and t in self.ordered_tickers:
+                idx = self.ordered_tickers.index(t)
+                yields_list.append(self.tuner_stock_divs[idx])
+                growths_list.append(self.tuner_upsides[idx])
+            else:
+                meta = db.get(t, {})
+                yields_list.append(meta.get("yield", 0.0) / 100.0)
+                growths_list.append(meta.get("growth", 0.0) / 100.0)
+
+        yields_array = np.array(yields_list)
+        growths_array = np.array(growths_list)
+        
+        effective_targets = TARGETS.copy()
+        
+        # Aplikace dynamické dividendové brzdy na teoretické portfolio, pokud je v nastavení aktivní
+        if mode == "target" and getattr(self, 'dyn_targets_enabled', False) and sim_val > 0:
+            try:
+                yield_cap = getattr(self, 'dyn_yield_cap', 3.0) / 100.0
+                abs_target_net_czk = getattr(self, 'dyn_abs_div', 500000.0)
+                abs_target_gross_czk = abs_target_net_czk / (1 - DEFAULT_TAX_RATE)
+                
+                best_w = self._apply_dynamic_dividend_brake(
+                    nom_weights=nom_weights,
+                    yields_array=yields_array,
+                    growths_array=growths_array,
+                    projected_total_val=sim_val,
+                    abs_target_gross_czk=abs_target_gross_czk,
+                    yield_cap=yield_cap
+                )
+                
+                for i, t in enumerate(TARGETS.keys()):
+                    effective_targets[t] = float(best_w[i])
+            except Exception as e:
+                print(f"[!] Chyba výpočtu brzdy pro kalendář dividend: {e}")
+        
+        # Výpočet teoretických kusů z (případně ubržděných) vah
+        for t, weight in effective_targets.items():
             try:
                 p = float(prices_data[t])
                 if t.endswith(".L"): p /= 100.0
@@ -3811,13 +3854,17 @@ class CzechInvestorApp:
             total_size = sum(sizes)
             final_labels =[l if (s/total_size) > 0.03 else "" for l, s in zip(labels, sizes)]
             self.div_ax.pie(sizes, labels=final_labels, autopct=lambda p: f'{p:.1f}%'.replace('.', ',') if p > 3 else '', startangle=140, colors=plt.cm.tab20.colors)
-            self.div_ax.set_title("Zdroje Dividend")
+            self.div_ax.set_title("Zdroje dividend")
         else: self.div_ax.text(0.5, 0.5, "Žádná data", ha='center')
 
         self.div_canvas.draw()
         
         # Aktualizace popisku s výsledkem
-        val_text = f"Hodnota portfolia pro výpočet: {sim_val:,.0f} Kč. ".replace(',', ' ') if mode == "target" else ""
+        if mode == "target":
+            brake_str = " (s aplikovanou dividendovou brzdou)" if getattr(self, 'dyn_targets_enabled', False) else ""
+            val_text = f"Hodnota pro výpočet{brake_str}: {sim_val:,.0f} Kč. ".replace(',', ' ')
+        else:
+            val_text = ""
         
         # Bezpečný přepis UI
         self.root.after(0, lambda: self.div_total_lbl.config(text=f"{val_text}Celkem {current_year}: {total_czk_gross:,.0f} Kč (Čistého: {total_czk_net:,.0f} Kč)".replace(',', ' ')))
