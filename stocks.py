@@ -3704,7 +3704,26 @@ class CzechInvestorApp:
                         
                         ticker_dividend_totals[t] = ticker_dividend_totals.get(t, 0) + czk_gross
                         
-                        txt = f"{gross_val:.2f} {currency}".replace('.', ',')
+                        # --- Zjištění případného propadu oproti loňsku ---
+                        warning_suffix = ""
+                        yf_equiv = gross_val * 100.0 if t.endswith(".L") else gross_val
+                        if not divs_last_yr.empty:
+                            target_yday = pay_date.timetuple().tm_yday
+                            closest_last = None
+                            min_diff = 60 # U IBKR CSV je to Pay-Date, takže tolerance musí být větší (až měsíc po Ex-Date)
+                            for d_last, amt_last in divs_last_yr.items():
+                                diff = abs(d_last.timetuple().tm_yday - target_yday)
+                                if diff < min_diff:
+                                    min_diff = diff
+                                    closest_last = amt_last
+                            if closest_last and closest_last > 0:
+                                ratio = yf_equiv / closest_last
+                                # Varování, pokud dividenda klesla o více než 10 % (ratio < 0.9).
+                                # Ignorujeme propady o více než 80 % (ratio < 0.2), to je typicky split akcií nebo jednorázová speciální dividenda.
+                                if 0.2 < ratio < 0.9:
+                                    warning_suffix = f" ⚠️ (-{(1 - ratio) * 100:.0f} %)"
+                        
+                        txt = f"{gross_val:.2f} {currency}".replace('.', ',') + warning_suffix
                         calendar_rows.append({
                             "date": pay_date, 
                             "values": (format_cz_date(pay_date), t, txt, "✅ Vyplaceno (IBKR)", f"{czk_gross:.0f} Kč".replace('.', ',')),
@@ -3759,6 +3778,25 @@ class CzechInvestorApp:
 
                             if t.endswith(".L"): val_c = amount / 100.0; txt = f"{amount:.2f} p".replace('.', ',')
                             else: val_c = amount; txt = f"{amount:.2f} {CURRENCIES.get(t, 'USD')}".replace('.', ',')
+                            
+                            # --- Zjištění případného propadu oproti loňsku ---
+                            warning_suffix = ""
+                            if not divs_last_yr.empty:
+                                target_yday = d_val.timetuple().tm_yday
+                                closest_last = None
+                                min_diff = 45 # Yahoo je Ex-Date, tolerance 45 dní stačí
+                                for d_last, amt_last in divs_last_yr.items():
+                                    diff = abs(d_last.timetuple().tm_yday - target_yday)
+                                    if diff < min_diff:
+                                        min_diff = diff
+                                        closest_last = amt_last
+                                if closest_last and closest_last > 0:
+                                    ratio = amount / closest_last
+                                    # Varování, pokud dividenda klesla o více než 10 % (ratio < 0.9)
+                                    if 0.2 < ratio < 0.9:
+                                        warning_suffix = f" ⚠️ (-{(1 - ratio) * 100:.0f} %)"
+                            
+                            txt += warning_suffix
                             
                             czk_val = valid_qty * val_c * fx.get(CURRENCIES.get(t, "USD"), 23.0)
                             net_czk_val = czk_val * (1.0 - tax_rate)
