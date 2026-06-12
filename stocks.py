@@ -1,9 +1,10 @@
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, filedialog
 import yfinance as yf
 import json
 import os
 from datetime import datetime, timedelta, date
+import time
 import threading
 import math
 import pandas as pd
@@ -11,6 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Patch
+from matplotlib.ticker import FuncFormatter
 import requests
 from bs4 import BeautifulSoup
 import sys
@@ -30,6 +32,7 @@ import pdfplumber
 import io
 import concurrent.futures
 from yahooquery import Ticker as YQTicker
+import csv
 
 # ==============================================================================
 # KONFIGURACE A DATABÁZE APLIKACE
@@ -528,14 +531,12 @@ class CzechInvestorApp:
             with self._preload_thread_lock:
                 if not self.tuner_preloading and not getattr(self, 'tuner_data_loaded', False):
                     self.tuner_preloading = True
-                    import threading
                     threading.Thread(target=self._async_preload_worker, daemon=True).start()
                     
         self.root.after(500, _safe_start_preload)
 
     def on_close(self):
         self.root.destroy()
-        import os
         os._exit(0)
 
     # --------------------------------------------------------------------------
@@ -699,7 +700,6 @@ class CzechInvestorApp:
         return False
 
     def get_fx_rates(self):
-        import time
         # Vytvoření mezipaměti při prvním spuštění
         if not hasattr(self, '_fx_cache_time'): 
             self._fx_cache_time = 0
@@ -780,7 +780,6 @@ class CzechInvestorApp:
                 # Garantované zrušení časovače a skrytí animace (provedeno v hlavním vlákně)
                 self.root.after(0, self._cleanup_sell_price_loading)
 
-        import threading
         threading.Thread(target=work, daemon=True).start()
 
     def _cleanup_sell_price_loading(self):
@@ -800,7 +799,6 @@ class CzechInvestorApp:
 
     def _safe_yf_download(self, tickers, period="5y", interval="1d", max_retries=2, auto_adjust=True, start=None, end=None):
         """Volá robustní stahovač se záložním zdrojem a ochranou relace."""
-        import time
         if not hasattr(self, 'data_fetcher'):
             self.data_fetcher = RobustDataFetcher()
 
@@ -836,7 +834,6 @@ class CzechInvestorApp:
         Využívá yfinance s robustním záchranným fallbackem na yahooquery při chybě 401 Invalid Crumb.
         Celá síťová komunikace je synchronizována přes sdílený zámek RobustDataFetcher._yf_lock.
         """
-        import time
         if not hasattr(self, '_fund_cache'):
             self._fund_cache = {}
             
@@ -1344,7 +1341,7 @@ class CzechInvestorApp:
             # Matematická nutnost: Nejnižší toxický yield posuneme na nulu.
             # Tím zajistíme, že nejlepší růstová akcie nebude nikdy brzděna (exp(0) = 1.0),
             # nespadne na 50% mantinel a algoritmus se nezacyklí (tzv. bounce-back efekt).
-            active_mask = nom_weights > 0.0001
+            active_mask = nom_weights > 1e-6
             if np.any(active_mask):
                 toxic_yield[active_mask] -= np.min(toxic_yield[active_mask])
             
@@ -1415,7 +1412,6 @@ class CzechInvestorApp:
 
     def calculate_buys(self):
         try:
-            import time
             wait_loops = 0
             # Aplikace čeká na dokončení stahování fundamentů z preloaderu na pozadí (max 180 vteřin, zde v desetinách)
             while not getattr(self, 'tuner_data_loaded', False) and wait_loops < 1800:
@@ -1446,21 +1442,39 @@ class CzechInvestorApp:
                 self.root.after(0, lambda err=e: messagebox.showerror("Chyba", f"Chyba stahování dat: {err}"))
                 return
 
+            # --- ŘEŠENÍ PRO ČERSTVÁ IPO A CHYBĚJÍCÍ CENY ---
+            prices_dict = {}
+            for t in all_tickers:
+                try:
+                    p = float(prices_data.get(t, 0.0))
+                    if pd.isna(p) or p <= 0:
+                        raise ValueError("Chybí cena v historii")
+                    prices_dict[t] = p
+                except Exception:
+                    # Fallback: Yfinance v history() často nemá dnešní IPO, 
+                    # ale v info (fundamenty) se dá zjistit 'currentPrice'
+                    fund = self._safe_get_fundamentals(t)
+                    p = float(fund.get('current_price') or 0.0)
+                    prices_dict[t] = p if not pd.isna(p) else 0.0
+
             current_holdings_val = {}
             total_current_portfolio_val = 0.0
 
             for t in all_tickers:
                 qty_held = sum(item['qty'] for item in self.ledger.get(t,[]))
-                try:
-                    price = float(prices_data[t])
-                    cur = CURRENCIES.get(t, "USD")
-                    fx_rate = fx.get(cur, 1.0)
-                    if t.endswith(".L"): price /= 100.0
+                price = prices_dict.get(t, 0.0)
+                
+                cur = CURRENCIES.get(t, "USD")
+                fx_rate = fx.get(cur, 1.0)
+                
+                if t.endswith(".L"): price /= 100.0
+                
+                if price > 0:
                     val_czk = qty_held * price * fx_rate
                     current_holdings_val[t] = val_czk
                     total_current_portfolio_val += val_czk
-                except Exception:
-                    current_holdings_val[t] = 0
+                else:
+                    current_holdings_val[t] = 0.0
 
            # Skutečná hodnota portfolia po zainvestování vložené částky (potřebné pro dynamický cíl)
             projected_total_val = total_current_portfolio_val + invest
@@ -1591,7 +1605,8 @@ class CzechInvestorApp:
                     # Prevence "falešných poplatkových penalizací" u nadvážených nebo nulových pozic.
                     # Zjistíme cenu v CZK pro výpočet minimálního smysluplného nákupu (0.001 ks)
                     cur = self.get_currency_for_ticker(t)
-                    price = float(prices_data[t])
+                    price = prices_dict.get(t, 0.0)
+                    if price <= 0: continue
                     fx_rate = fx.get(cur, 1.0)
                     if t.endswith(".L"): price /= 100.0
                     price_in_czk = price * fx_rate
@@ -1630,11 +1645,14 @@ class CzechInvestorApp:
             
             # 4. Formátování řádků pro UI
             for t, target in effective_targets.items():
-                if target <= 0.001: continue
+                if target <= 1e-6: continue
                 
                 try:
                     cur = self.get_currency_for_ticker(t)
-                    price = float(prices_data[t])
+                    price = prices_dict.get(t, 0.0)
+                    if price <= 0:
+                        print(f"[!] Akcie {t} přeskočena - nebyla nalezena tržní cena.")
+                        continue
                     fx_rate = fx.get(cur, 1.0)
                     if t.endswith(".L"): price /= 100.0
                     price_in_czk = price * fx_rate
@@ -1815,9 +1833,6 @@ class CzechInvestorApp:
             self.real_qty.insert(0, str(round(remaining, 3)))
 
     def import_ibkr_csv(self):
-        from tkinter import filedialog
-        import csv
-        
         filepath = filedialog.askopenfilename(
             title="Vyberte CSV výpis (Activity Statement) z Interactive Brokers",
             filetypes=(("CSV Soubory", "*.csv"), ("Všechny soubory", "*.*"))
@@ -2496,7 +2511,6 @@ class CzechInvestorApp:
                 with self._preload_thread_lock:
                     if not self.tuner_preloading:
                         self.tuner_preloading = True
-                        import threading
                         threading.Thread(target=self._async_preload_worker, daemon=True).start()
 
 
@@ -2931,7 +2945,6 @@ class CzechInvestorApp:
         for i in self.sell_staging_tree.get_children(): self.sell_staging_tree.delete(i)
         
         self.sell_loading_timer = self.root.after(1000, lambda: self.show_loading(self.sell_loading_state, "Počítám optimální prodej..."))
-        import threading
         threading.Thread(target=self.calculate_withdrawal, daemon=True).start()
 
     def start_calculate_rebalancing(self):
@@ -2944,7 +2957,6 @@ class CzechInvestorApp:
         # Nastavení časovače pro zobrazení loading ozubených kol
         self.sell_loading_timer = self.root.after(1000, lambda: self.show_loading(self.sell_loading_state, "Počítám rebalancování z živých dat..."))
         
-        import threading
         threading.Thread(target=self.calculate_rebalancing, daemon=True).start()
 
     def calculate_rebalancing(self):
@@ -2954,7 +2966,6 @@ class CzechInvestorApp:
         vyhledá všechny nadhodnocené pozice a navrhne jejich prodej.
         """
         try:
-            import time
             wait_loops = 0
             # Aplikace čeká na dokončení stahování fundamentů z preloaderu na pozadí (max 180 vteřin, zde v desetinách)
             while not getattr(self, 'tuner_data_loaded', False) and wait_loops < 1800:
@@ -2979,21 +2990,36 @@ class CzechInvestorApp:
                 self.root.after(0, lambda err=e: messagebox.showerror("Chyba rebalancování", f"Chyba stahování dat: {err}"))
                 return
 
+            # --- ŘEŠENÍ PRO ČERSTVÁ IPO A CHYBĚJÍCÍ CENY ---
+            prices_dict = {}
+            for t in all_tickers:
+                try:
+                    p = float(prices_data.get(t, 0.0))
+                    if pd.isna(p) or p <= 0:
+                        raise ValueError("Chybí cena v historii")
+                    prices_dict[t] = p
+                except Exception:
+                    fund = self._safe_get_fundamentals(t)
+                    p = float(fund.get('current_price') or 0.0)
+                    prices_dict[t] = p if not pd.isna(p) else 0.0
+
             # Výpočet aktuální tržní hodnoty každé pozice a celku
             current_holdings_val = {}
             total_current_portfolio_val = 0.0
 
             for t in all_tickers:
                 qty_held = sum(item['qty'] for item in self.ledger.get(t, []))
-                try:
-                    price = float(prices_data[t])
-                    cur = self.get_currency_for_ticker(t)
-                    fx_rate = fx.get(cur, 23.0)
-                    if t.endswith(".L"): price /= 100.0
+                price = prices_dict.get(t, 0.0)
+                cur = self.get_currency_for_ticker(t)
+                fx_rate = fx.get(cur, 23.0)
+                
+                if t.endswith(".L"): price /= 100.0
+                
+                if price > 0:
                     val_czk = qty_held * price * fx_rate
                     current_holdings_val[t] = val_czk
                     total_current_portfolio_val += val_czk
-                except Exception:
+                else:
                     current_holdings_val[t] = 0.0
 
             # --- ZÍSKÁNÍ PŘESNÝCH DAT (Společné pro dynamickou brzdu) ---
@@ -3057,7 +3083,8 @@ class CzechInvestorApp:
                 if curr_val > ideal_val + 100.0:
                     excess_czk = curr_val - ideal_val
                     try:
-                        price = float(prices_data[t])
+                        price = prices_dict.get(t, 0.0)
+                        if price <= 0: continue
                         cur = self.get_currency_for_ticker(t)
                         fx_rate = fx.get(cur, 23.0)
                         
@@ -3103,11 +3130,12 @@ class CzechInvestorApp:
             self.cash_entry.insert(0, f"{total_raised_czk:.0f}")
             
         if rows:
+            total_raised_czk_space = f"{total_raised_czk:,.0f}".replace(',', ' ')
             messagebox.showinfo(
                 "Návrh rebalancování", 
                 f"Výpočet úspěšně dokončen!\n\n"
                 f"• Navrženo snížení u {len(rows)} nadhodnocených pozic.\n"
-                f"• Celkový odhadovaný výnos k reinvestování: {total_raised_czk:,.0f} Kč.\n\n"
+                f"• Celkový odhadovaný výnos k reinvestování: {total_raised_czk_space} Kč.\n\n"
                 f"Tato částka byla automaticky předvyplněna do pole 'Investice (Kč)' "
                 f"na kartě Nákup. Po schválení těchto prodejů stačí přejít tam a jedním kliknutím "
                 f"spočítat optimální rebalanční nákup.", parent=self.root
@@ -3140,7 +3168,6 @@ class CzechInvestorApp:
 
             try:
                 if not hasattr(self, 'data_fetcher'):
-                    from yahooquery import Ticker as YQTicker # Fallback pokud by chyběl import
                     self.data_fetcher = RobustDataFetcher()
                 raw_data = self.data_fetcher.fetch_history(all_tickers, period="5d")
                 if raw_data.empty or 'Close' not in raw_data:
@@ -3155,21 +3182,35 @@ class CzechInvestorApp:
                 self.root.after(0, lambda err=e: messagebox.showerror("Chyba", f"Chyba stahování dat: {err}"))
                 return
 
+            prices_dict = {}
+            for t in all_tickers:
+                try:
+                    p = float(prices_data.get(t, 0.0))
+                    if pd.isna(p) or p <= 0:
+                        raise ValueError
+                    prices_dict[t] = p
+                except Exception:
+                    fund = self._safe_get_fundamentals(t)
+                    p = float(fund.get('current_price') or 0.0)
+                    prices_dict[t] = p if not pd.isna(p) else 0.0
+
             current_holdings_val = {}
             total_current_portfolio_val = 0.0
 
             for t in all_tickers:
                 qty_held = sum(item['qty'] for item in self.ledger.get(t,[]))
-                try:
-                    price = float(prices_data[t])
-                    cur = self.get_currency_for_ticker(t)
-                    fx_rate = fx.get(cur, 23.0)
-                    if t.endswith(".L"): price /= 100.0
+                price = prices_dict.get(t, 0.0)
+                cur = self.get_currency_for_ticker(t)
+                fx_rate = fx.get(cur, 23.0)
+                
+                if t.endswith(".L"): price /= 100.0
+                
+                if price > 0:
                     val_czk = qty_held * price * fx_rate
                     current_holdings_val[t] = val_czk
                     total_current_portfolio_val += val_czk
-                except Exception:
-                    current_holdings_val[t] = 0
+                else:
+                    current_holdings_val[t] = 0.0
 
             if target_cash > total_current_portfolio_val:
                 self.root.after(0, lambda: messagebox.showerror("Chyba", "Požadovaná částka přesahuje aktuální hodnotu celého portfolia!"))
@@ -3205,7 +3246,8 @@ class CzechInvestorApp:
                 if curr_val > ideal_val:
                     sell_czk = curr_val - ideal_val
                     try:
-                        price = float(prices_data[t])
+                        price = prices_dict.get(t, 0.0)
+                        if price <= 0: continue
                         cur = self.get_currency_for_ticker(t)
                         fx_rate = fx.get(cur, 23.0)
                         
@@ -3427,7 +3469,6 @@ class CzechInvestorApp:
             self.save_data()
             self.update_lots_view()
             # Spustí asynchronní přepočet na záložce Kalendář dividend
-            import threading
             threading.Thread(target=self.refresh_dividends, daemon=True).start()
 
         if failed_sales:
@@ -4284,7 +4325,6 @@ class CzechInvestorApp:
         return raw_yield, payout, limit
         
     def initialize_tuner_data(self, force_download=True, n_sims=None, auto_improve=False):
-        import time 
         if n_sims is None:
             n_sims = MC_NO
         try:
@@ -4744,7 +4784,7 @@ class CzechInvestorApp:
         # 1. Agregace dat podle vah
         for i, t in enumerate(self.ordered_tickers):
             w = weights[i]
-            if w <= 0.001: continue
+            if w <= 1e-6: continue
             
             meta = db.get(t, {})
             sector = meta.get("sector", "Unknown")
@@ -4969,7 +5009,7 @@ class CzechInvestorApp:
         def decay_portfolio_weights(w_nom):
             min_allowed_weights = w_nom * DYN_TARGET_MIN_WEIGHT_FRACTION
             rem_weight = 1.0 - np.sum(min_allowed_weights)
-            lowest_yield_available = np.min(yields_array[w_nom > 0.0001]) if np.any(w_nom > 0.0001) else 0.0
+            lowest_yield_available = np.min(yields_array[w_nom > 1e-6]) if np.any(w_nom > 1e-6) else 0.0
             
             true_min_portfolio_yield = np.sum(min_allowed_weights * yields_array) + (rem_weight * lowest_yield_available)
             safe_target_yield = max(target_yield, true_min_portfolio_yield + DYN_YIELD_TOLERANCE)
@@ -4986,7 +5026,7 @@ class CzechInvestorApp:
             growth_credit = np.maximum(0, growths_array) * 0.75
             toxic_yield = np.maximum(0, yields_array - growth_credit)
             
-            active_mask = w_nom > 0.0001
+            active_mask = w_nom > 1e-6
             if np.any(active_mask):
                 toxic_yield[active_mask] -= np.min(toxic_yield[active_mask])
             
@@ -5746,7 +5786,6 @@ class CzechInvestorApp:
             self.ax1.legend()
             self.ax1.set_ylabel("Hodnota [Kč]")
 
-            from matplotlib.ticker import FuncFormatter
             def custom_formatter(x, pos):
                 if abs(x) >= 1000000: return f'{x*1e-6:.1f} mil.'.replace('.', ',')
                 elif abs(x) >= 1000: return f'{x*1e-3:.0f} tis.'.replace('.', ',')
