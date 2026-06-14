@@ -2614,7 +2614,7 @@ class CzechInvestorApp:
                     "recommendation": fund.get('recommendation')
                 }
                 
-                # Cílový růst (inteligentní mix analytiků a 5Y historie)
+                # 1. Výpočet aktuálního živého růstu (více se opíráme o 5Y historii CAGR, méně o volatilní odhady)
                 idx = ordered_tickers.index(t)
                 hist_growth_ratio = 1.0 / tuner_stock_growths[idx] if tuner_stock_growths[idx] > 0 else 1.0
                 cagr_5y = (hist_growth_ratio ** (1/5.0)) - 1.0 if hist_growth_ratio > 0 else 0.0
@@ -2623,18 +2623,26 @@ class CzechInvestorApp:
                 cp = fund['current_price']
                 analyst_ups = (tp / cp) - 1.0 if (tp and cp and cp > 0) else cagr_5y
                 
-                # Ochrana před nesmyslnými odhady:
+                # Ochrana před nesmyslnými odhady a otočení poměru pro větší stabilitu
                 if analyst_ups < 0 and cagr_5y > 0.15:
-                    # Raketové akcie (např. MU): Ignorujeme záporný odhad, věříme dlouhodobému trendu
-                    ups = cagr_5y * 0.6 
+                    live_ups = cagr_5y * 0.8 
                 elif analyst_ups < 0 and cagr_5y > 0.05:
-                    # Stabilní firmy: Netrestáme je záporným odhadem, zarovnáme na nulu
-                    ups = max(analyst_ups, 0.0) 
+                    live_ups = max(analyst_ups * 0.2 + cagr_5y * 0.8, 0.0) 
                 else:
-                    # Běžný mix: 60 % analytici, 40 % historie (vyhladí extrémy)
-                    ups = (analyst_ups * 0.6) + (cagr_5y * 0.4)
+                    # Stabilní mix: 70 % tvrdá historie, 30 % odhad analytiků
+                    live_ups = (analyst_ups * 0.3) + (cagr_5y * 0.7)
+
+                # 2. APLIKACE EWMA FILTRU (Vyhlazení s využitím paměti v JSONu)
+                db_meta = getattr(self, 'stock_db_from_json', {}).get(t, {})
+                if "growth" in db_meta:
+                    saved_growth = db_meta["growth"] / 100.0
+                    # Tlumící faktor: 80 % stará dlouhodobá hodnota, 20 % aktuální výkyv z trhu
+                    smoothed_ups = (saved_growth * 0.80) + (live_ups * 0.20)
+                else:
+                    # Cold start: U nově přidané akcie bez historie v JSONu použijeme 100 % živých dat
+                    smoothed_ups = live_ups
                     
-                upsides.append(ups)
+                upsides.append(smoothed_ups)
                 
             # 4. Bezpečné uložení výsledků do instance pro ostatní části aplikace
             self.ordered_tickers = ordered_tickers
@@ -4431,7 +4439,7 @@ class CzechInvestorApp:
                         "recommendation": fund.get('recommendation')
                     }
                     
-                    # 2. Cílový růst (Inteligentní mix analytiků a 5Y historie)
+                    # 1. Výpočet aktuálního živého růstu (více se opíráme o 5Y historii CAGR, méně o volatilní odhady)
                     idx = self.ordered_tickers.index(t)
                     hist_growth_ratio = 1.0 / self.tuner_stock_growths[idx] if self.tuner_stock_growths[idx] > 0 else 1.0
                     cagr_5y = (hist_growth_ratio ** (1/5.0)) - 1.0 if hist_growth_ratio > 0 else 0.0
@@ -4441,13 +4449,21 @@ class CzechInvestorApp:
                     analyst_ups = (tp / cp) - 1.0 if (tp and cp and cp > 0) else cagr_5y
                     
                     if analyst_ups < 0 and cagr_5y > 0.15:
-                        ups = cagr_5y * 0.6 
+                        live_ups = cagr_5y * 0.8 
                     elif analyst_ups < 0 and cagr_5y > 0.05:
-                        ups = max(analyst_ups, 0.0) 
+                        live_ups = max(analyst_ups * 0.2 + cagr_5y * 0.8, 0.0) 
                     else:
-                        ups = (analyst_ups * 0.6) + (cagr_5y * 0.4)
+                        live_ups = (analyst_ups * 0.3) + (cagr_5y * 0.7)
+
+                    # 2. APLIKACE EWMA FILTRU (Vyhlazení s využitím paměti v JSONu)
+                    db_meta = getattr(self, 'stock_db_from_json', {}).get(t, {})
+                    if "growth" in db_meta:
+                        saved_growth = db_meta["growth"] / 100.0
+                        smoothed_ups = (saved_growth * 0.80) + (live_ups * 0.20)
+                    else:
+                        smoothed_ups = live_ups
                         
-                    upsides.append(ups)
+                    upsides.append(smoothed_ups)
                     
                 self.tuner_safe_divs = np.array(safe_divs)
                 self.tuner_upsides = np.array(upsides)
