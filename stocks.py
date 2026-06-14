@@ -208,6 +208,7 @@ DYN_BRAKE_MAX_K = 5000.0              # Max hodnota k-faktoru v iteraci (horní 
 DYN_BRAKE_ITERATIONS = 60             # Počet iterací algoritmu Water-Filling
 GLIDE_PATH_RAMP_START = 0.5           # Procento splnění cíle, od kterého brzda začne polevovat (50 %)
 DYN_YIELD_TOLERANCE = 0.004           # Aditivní rezerva proti matematickému extrému
+EWMA_HALF_LIFE_DAYS = 45.0            # Poločas rozpadu v dnech pro vyhlazování odhadů růstu akcií
 
 # ==============================================================================
 # TŘÍDA PRO ROBUSTNÍ STAHOVÁNÍ FINANČNÍCH DAT
@@ -592,6 +593,8 @@ class CzechInvestorApp:
                     # Načtení nastavení řazení v Editoru (výchozí "metrics")
                     self.editor_sort_mode = data.get("editor_sort_mode", "metrics")
                     
+                    self.last_growth_update = data.get("last_growth_update", None)
+                    
                     # Načtení nastavení dynamického cílování portfolia
                     self.dyn_targets_enabled = data.get("dyn_targets_enabled", False)
                     self.dyn_yield_cap = float(data.get("dyn_yield_cap", 3.0))
@@ -623,6 +626,7 @@ class CzechInvestorApp:
             "fee_percent": getattr(self, 'fee_percent', 0.5),
             "optimize_fees_enabled": getattr(self, 'optimize_fees_enabled', True),
             "editor_sort_mode": getattr(self, 'editor_sort_mode', 'metrics'),
+            "last_growth_update": getattr(self, 'last_growth_update', None),
             "dyn_targets_enabled": getattr(self, 'dyn_targets_enabled', False),
             "dyn_yield_cap": getattr(self, 'dyn_yield_cap', 3.0),
             "dyn_abs_div": getattr(self, 'dyn_abs_div', 500000),
@@ -2592,6 +2596,22 @@ class CzechInvestorApp:
             safe_divs = []
             tuner_fundamentals = {}
             
+            # --- VÝPOČET ČASOVÉHO KROKU PRO EWMA FILTR ---
+            now = datetime.now()
+            last_update_str = getattr(self, 'last_growth_update', None)
+            if last_update_str:
+                try:
+                    last_update_date = datetime.fromisoformat(last_update_str)
+                    delta_days = (now - last_update_date).total_seconds() / 86400.0
+                except:
+                    delta_days = 1.0
+            else:
+                delta_days = 1.0 # Výchozí krok pro iniciální start filtru
+                
+            delta_days = max(0.0, min(delta_days, 365.0)) # Ochrana před nesmyslnými časovými skoky
+            # Výpočet exponenciálního tlumícího faktoru závislého na čase (poločas = EWMA_HALF_LIFE_DAYS)
+            decay_factor = math.exp(-delta_days * (math.log(2) / EWMA_HALF_LIFE_DAYS))
+            
             for t in ordered_tickers:
                 fund = self._safe_get_fundamentals(t)
                 sector = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB).get(t, {}).get("sector", "Unknown")
@@ -2623,23 +2643,28 @@ class CzechInvestorApp:
                 cp = fund['current_price']
                 analyst_ups = (tp / cp) - 1.0 if (tp and cp and cp > 0) else cagr_5y
                 
-                # Ochrana před nesmyslnými odhady a otočení poměru pro větší stabilitu
                 if analyst_ups < 0 and cagr_5y > 0.15:
                     live_ups = cagr_5y * 0.8 
                 elif analyst_ups < 0 and cagr_5y > 0.05:
                     live_ups = max(analyst_ups * 0.2 + cagr_5y * 0.8, 0.0) 
                 else:
-                    # Stabilní mix: 70 % tvrdá historie, 30 % odhad analytiků
                     live_ups = (analyst_ups * 0.3) + (cagr_5y * 0.7)
 
-                # 2. APLIKACE EWMA FILTRU (Vyhlazení s využitím paměti v JSONu)
+                # 2. APLIKACE ČASOVĚ ZÁVISLÉHO EWMA FILTRU
+                now = datetime.now()
+                last_update_str = getattr(self, 'last_growth_update', None)
+                if last_update_str:
+                    try:
+                        delta_days = max(0.0, min((now - datetime.fromisoformat(last_update_str)).total_seconds() / 86400.0, 365.0))
+                    except: delta_days = 1.0
+                else: delta_days = 1.0
+                decay_factor = math.exp(-delta_days * (math.log(2) / EWMA_HALF_LIFE_DAYS))
+
                 db_meta = getattr(self, 'stock_db_from_json', {}).get(t, {})
-                if "growth" in db_meta:
+                if "growth" in db_meta and last_update_str is not None:
                     saved_growth = db_meta["growth"] / 100.0
-                    # Tlumící faktor: 80 % stará dlouhodobá hodnota, 20 % aktuální výkyv z trhu
-                    smoothed_ups = (saved_growth * 0.80) + (live_ups * 0.20)
+                    smoothed_ups = (saved_growth * decay_factor) + (live_ups * (1.0 - decay_factor))
                 else:
-                    # Cold start: U nově přidané akcie bez historie v JSONu použijeme 100 % živých dat
                     smoothed_ups = live_ups
                     
                 upsides.append(smoothed_ups)
@@ -2653,6 +2678,7 @@ class CzechInvestorApp:
             self.tuner_fundamentals = tuner_fundamentals
             
             # --- ULOŽENÍ ČERSTVÝCH DAT DO JSON DATABÁZE ---
+            self.last_growth_update = datetime.now().isoformat()
             if hasattr(self, 'stock_db_from_json'):
                 for i, t in enumerate(ordered_tickers):
                     if t in self.stock_db_from_json:
@@ -4412,6 +4438,21 @@ class CzechInvestorApp:
                 safe_divs, upsides = [],[]
                 self.tuner_fundamentals = {}
                 
+                # --- VÝPOČET ČASOVÉHO KROKU PRO EWMA FILTR ---
+                now = datetime.now()
+                last_update_str = getattr(self, 'last_growth_update', None)
+                if last_update_str:
+                    try:
+                        last_update_date = datetime.fromisoformat(last_update_str)
+                        delta_days = (now - last_update_date).total_seconds() / 86400.0
+                    except:
+                        delta_days = 1.0
+                else:
+                    delta_days = 1.0
+                    
+                delta_days = max(0.0, min(delta_days, 365.0))
+                decay_factor = math.exp(-delta_days * (math.log(2) / EWMA_HALF_LIFE_DAYS))
+                
                 for t in self.ordered_tickers:
                     fund = self._safe_get_fundamentals(t)
                     
@@ -4455,11 +4496,20 @@ class CzechInvestorApp:
                     else:
                         live_ups = (analyst_ups * 0.3) + (cagr_5y * 0.7)
 
-                    # 2. APLIKACE EWMA FILTRU (Vyhlazení s využitím paměti v JSONu)
+                    # 2. APLIKACE ČASOVĚ ZÁVISLÉHO EWMA FILTRU
+                    now = datetime.now()
+                    last_update_str = getattr(self, 'last_growth_update', None)
+                    if last_update_str:
+                        try:
+                            delta_days = max(0.0, min((now - datetime.fromisoformat(last_update_str)).total_seconds() / 86400.0, 365.0))
+                        except: delta_days = 1.0
+                    else: delta_days = 1.0
+                    decay_factor = math.exp(-delta_days * (math.log(2) / EWMA_HALF_LIFE_DAYS))
+
                     db_meta = getattr(self, 'stock_db_from_json', {}).get(t, {})
-                    if "growth" in db_meta:
+                    if "growth" in db_meta and last_update_str is not None:
                         saved_growth = db_meta["growth"] / 100.0
-                        smoothed_ups = (saved_growth * 0.80) + (live_ups * 0.20)
+                        smoothed_ups = (saved_growth * decay_factor) + (live_ups * (1.0 - decay_factor))
                     else:
                         smoothed_ups = live_ups
                         
@@ -4467,6 +4517,19 @@ class CzechInvestorApp:
                     
                 self.tuner_safe_divs = np.array(safe_divs)
                 self.tuner_upsides = np.array(upsides)
+                
+                # --- ULOŽENÍ ČERSTVÝCH DAT DO JSON DATABÁZE I Z TUNERU ---
+                self.last_growth_update = datetime.now().isoformat()
+                if hasattr(self, 'stock_db_from_json'):
+                    for i, t in enumerate(self.ordered_tickers):
+                        if t in self.stock_db_from_json:
+                            if self.stock_db_from_json[t].get("sector") == "ETF" and self.stock_db_from_json[t].get("etf_type") == "Acc":
+                                self.stock_db_from_json[t]['yield'] = 0.0
+                            else:
+                                self.stock_db_from_json[t]['yield'] = round(float(self.tuner_stock_divs[i]) * 100.0, 4)
+                            self.stock_db_from_json[t]['growth'] = round(float(upsides[i]) * 100.0, 4)
+                    self.save_data()
+                    
                 self.tuner_data_loaded = True
             
             n_cores = multiprocessing.cpu_count()
