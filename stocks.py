@@ -201,6 +201,9 @@ DIV_YIELD_DROP = 0.5 # Očekávaný poměr změny dividend u akcií, které vypl
 DIV_WARN_FRACTION = 0.03 # Od jakého podílu jednoho zdroje dividend se zobrazí varování
 HHI_PENALTY = 2.0    # míra penalizace koncentrace portfolia při optimalizaci (multiplikátor Herfindahl-Hirschmanova indexu)
 
+# --- KONSTANTA PRO DYNAMICKÝ POSUV VAH (DRIFTING TARGETS) ---
+ALPHA_DRIFT = 0.5 # 0.5 = 50% váha na původní cíl, 50% váha na aktuální tržní realitu
+
 # --- KONSTANTY PRO DYNAMICKOU BRZDU A DANĚ ---
 DEFAULT_TAX_RATE = 0.15               # Výchozí srážková daň z dividend a zisků (15 %)
 DYN_TARGET_MIN_WEIGHT_FRACTION = 0.25 # Mantinel (Soft-Floor): váha akcie nesmí klesnout pod 50 % původního cíle
@@ -209,6 +212,9 @@ DYN_BRAKE_ITERATIONS = 60             # Počet iterací algoritmu Water-Filling
 GLIDE_PATH_RAMP_START = 0.5           # Procento splnění cíle, od kterého brzda začne polevovat (50 %)
 DYN_YIELD_TOLERANCE = 0.004           # Aditivní rezerva proti matematickému extrému
 EWMA_HALF_LIFE_DAYS = 45.0            # Poločas rozpadu v dnech pro vyhlazování odhadů růstu akcií
+
+# --- Další konstanty
+EPSILON_WEIGHT = 1e-6  # minimální váha, která už je považovaná za nulovou
 
 # ==============================================================================
 # TŘÍDA PRO ROBUSTNÍ STAHOVÁNÍ FINANČNÍCH DAT
@@ -593,7 +599,11 @@ class CzechInvestorApp:
                     # Načtení nastavení řazení v Editoru (výchozí "metrics")
                     self.editor_sort_mode = data.get("editor_sort_mode", "metrics")
                     
+                    # Načtení datumu poslední aktualizace hodnoty růstu akcií
                     self.last_growth_update = data.get("last_growth_update", None)
+                    
+                    # Načtení nastavení metody výpočtu rebalancování
+                    self.drifting_targets_enabled = data.get("drifting_targets_enabled", False)
                     
                     # Načtení nastavení dynamického cílování portfolia
                     self.dyn_targets_enabled = data.get("dyn_targets_enabled", False)
@@ -610,6 +620,7 @@ class CzechInvestorApp:
         self.dyn_targets_enabled = False
         self.dyn_yield_cap = 3.0
         self.dyn_abs_div = 500000
+        self.drifting_targets_enabled = False
         return {t:[] for t in TARGETS},[], {}
 
     def save_data(self):
@@ -627,6 +638,7 @@ class CzechInvestorApp:
             "optimize_fees_enabled": getattr(self, 'optimize_fees_enabled', True),
             "editor_sort_mode": getattr(self, 'editor_sort_mode', 'metrics'),
             "last_growth_update": getattr(self, 'last_growth_update', None),
+            "drifting_targets_enabled": getattr(self, 'drifting_targets_enabled', False),
             "dyn_targets_enabled": getattr(self, 'dyn_targets_enabled', False),
             "dyn_yield_cap": getattr(self, 'dyn_yield_cap', 3.0),
             "dyn_abs_div": getattr(self, 'dyn_abs_div', 500000),
@@ -1115,6 +1127,21 @@ class CzechInvestorApp:
 
         tk.Label(top_bar, text="%", font=("Arial", 12), bg="#f0f2f5").pack(side=tk.LEFT)
 
+        # --- Checkbox pro Dynamický posuv vah (Drifting Targets) ---
+        self.drift_var = tk.BooleanVar(value=getattr(self, 'drifting_targets_enabled', False))
+        self.cb_drift = tk.Checkbutton(top_bar, text="Dynamický posuv vah (nechat vítěze růst)", 
+                                       variable=self.drift_var, font=("Arial", 12), bg="#f0f2f5",
+                                       command=self._on_drift_opt_change)
+        self.cb_drift.pack(side=tk.LEFT, padx=(30, 5))
+
+        # Tooltip pro Drifting Targets
+        tt_drift = ("Pokud je zapnuto, aplikace dovolí růstovým akciím přesáhnout nastavené váhy.\n"
+                    "Cílové váhy se dynamicky posouvají (driftují) směrem k aktuální tržní realitě.\n"
+                    "Díky tomu algoritmus neodstřihne rychle rostoucí akcie od nových investic,\n"
+                    "aniž byste ztratili výhodu automatického rebalancování propadlíků.")
+        self.cb_drift.bind("<Enter>", lambda e: self._show_tooltip(tt_drift))
+        self.cb_drift.bind("<Leave>", lambda e: self._hide_tooltip())
+
         # Rámeček pro Dynamické řízení portfolia
         dyn_frame = tk.Frame(calc_frame, bg="#E3F2FD", padx=5, pady=5, relief=tk.RIDGE, borderwidth=1)
         dyn_frame.pack(side=tk.TOP, fill=tk.X, pady=(5, 5))
@@ -1127,8 +1154,8 @@ class CzechInvestorApp:
         
         # Tooltip pro hlavní Checkbox
         tt_main = ("Pokud je zapnuto, aplikace automaticky tlumí nákupy akcií s vysokou dividendou v případě,\n"
-                   "že portfolio plní vaše finanční cíle. Veškeré ušetřené peníze přesměruje do růstových akcií.\n"
-                   "Tím zabrání vzniku 'pasti', kdy byste vlivem vysokých cen růstových akcií nakupovali už jen dividendové.")
+                   "že je portfolio v kumulativní části životního cyklu. Veškeré ušetřené peníze přesměruje do růstových akcií.\n"
+                   "Po dosažení cílového pasivního příjmu už nákup dividendých akcií není limitován (portfolio prioritizuje rentu).")
         self.cb_dyn_opt.bind("<Enter>", lambda e: self._show_tooltip(tt_main))
         self.cb_dyn_opt.bind("<Leave>", lambda e: self._hide_tooltip())
 
@@ -1304,6 +1331,14 @@ class CzechInvestorApp:
         if hasattr(self, 'buy_tree') and self.buy_tree.get_children() and self.btn_calc_buys['state'] == tk.NORMAL:
             self.start_calculate_buys()
 
+    def _on_drift_opt_change(self, event=None):
+        """Uloží nastavení dynamického posuvu vah a spustí přepočet."""
+        self.drifting_targets_enabled = self.drift_var.get()
+        self.save_data()
+        
+        if hasattr(self, 'buy_tree') and self.buy_tree.get_children() and self.btn_calc_buys['state'] == tk.NORMAL:
+            self.start_calculate_buys()
+
     def _apply_dynamic_dividend_brake(self, nom_weights, yields_array, growths_array, projected_total_val, abs_target_gross_czk, yield_cap):
         """
         Centrální metoda pro aplikaci dividendové brzdy na původní váhy.
@@ -1345,7 +1380,7 @@ class CzechInvestorApp:
             # Matematická nutnost: Nejnižší toxický yield posuneme na nulu.
             # Tím zajistíme, že nejlepší růstová akcie nebude nikdy brzděna (exp(0) = 1.0),
             # nespadne na 50% mantinel a algoritmus se nezacyklí (tzv. bounce-back efekt).
-            active_mask = nom_weights > 1e-6
+            active_mask = nom_weights > EPSILON_WEIGHT
             if np.any(active_mask):
                 toxic_yield[active_mask] -= np.min(toxic_yield[active_mask])
             
@@ -1399,13 +1434,69 @@ class CzechInvestorApp:
             
         return nom_weights.copy()
 
+    def _apply_drifting_targets(self, current_targets, current_holdings_val, total_portfolio_val):
+        """
+        Upraví cílové váhy tak, aby částečně driftovaly směrem k aktuální realitě.
+        Zabraňuje tomu, aby water-filling algoritmus přestal kupovat rychle rostoucí akcie.
+        Zároveň garantuje, že žádná z vah nepřeteče přes uživatelský MAX limit.
+        """
+        dynamic_targets = {}
+        
+        for t, target in current_targets.items():
+            curr_val = current_holdings_val.get(t, 0.0)
+            curr_weight = curr_val / total_portfolio_val if total_portfolio_val > 0 else 0.0
+            
+            # Ochrana: Pokud uživatel nastavil cíl na 0, natvrdo ho vynulujeme.
+            if target <= 1e-6:
+                dynamic_targets[t] = 0.0
+            else:
+                # Výpočet driftujícího cíle
+                dynamic_targets[t] = (target * ALPHA_DRIFT) + (curr_weight * (1.0 - ALPHA_DRIFT))
+                
+        # Načtení uživatelského maxima z UI (karta Tuning Portfolia)
+        max_limit = getattr(self, 'custom_max_w', MAX_W)
+        
+        # Extrakce aktivních tickerů pro matematickou projekci
+        active_tickers = [t for t, w in dynamic_targets.items() if w > 1e-6]
+        if not active_tickers:
+            return current_targets.copy()
+            
+        w_raw = np.array([dynamic_targets[t] for t in active_tickers])
+        w_norm = w_raw / np.sum(w_raw)
+        
+        # Ochrana před matematicky neřešitelným stavem (uživatel nastavil příliš nízký strop)
+        if max_limit * len(active_tickers) < 1.0:
+            max_limit = 1.0 / len(active_tickers)
+            
+        # ---------------------------------------------------------
+        # MATEMATICKÁ PROJEKCE S DODRŽENÍM MAXIMÁLNÍHO LIMITU
+        # ---------------------------------------------------------
+        # Přetečená váha z nadhodnocených akcií se odřízne a 
+        # rovnoměrně se rozprostře mezi ostatní aktivní akcie.
+        lambda_shift = 0.0
+        for _ in range(25):
+            w_clipped = np.clip(w_norm + lambda_shift, 0.0, max_limit)
+            diff = 1.0 - np.sum(w_clipped)
+            if abs(diff) < 1e-7:
+                break
+            lambda_shift += diff / len(w_raw)
+            
+        w_norm = np.clip(w_norm + lambda_shift, 0.0, max_limit)
+        
+        # Zápis upravených a oříznutých vah zpět do slovníku
+        for i, t in enumerate(active_tickers):
+            dynamic_targets[t] = float(w_norm[i])
+            
+        return dynamic_targets
+
     def start_calculate_buys(self):
         """Příprava před výpočtem - zamkne tlačítka a vyčistí tabulku v hlavním vlákně."""
         self.btn_calc_buys.config(state=tk.DISABLED)
         
-        # Zamknutí prvků pro optimalizaci poplatků
+        # Zamknutí prvků pro optimalizaci poplatků a posuvu vah
         if hasattr(self, 'opt_fee_checkbox'): self.opt_fee_checkbox.config(state=tk.DISABLED)
         if hasattr(self, 'fee_entry'): self.fee_entry.config(state=tk.DISABLED)
+        if hasattr(self, 'cb_drift'): self.cb_drift.config(state=tk.DISABLED)
         
         for i in self.buy_tree.get_children(): self.buy_tree.delete(i)
         
@@ -1542,6 +1633,14 @@ class CzechInvestorApp:
                 except Exception as e:
                     print(f"[!] Chyba dynamického cílování: {e}")
 
+            # DYNAMICKÝ POSUV VAH (DRIFTING TARGETS)
+            if getattr(self, 'drifting_targets_enabled', False) and total_current_portfolio_val > 0:
+                effective_targets = self._apply_drifting_targets(
+                    current_targets=effective_targets,
+                    current_holdings_val=current_holdings_val,
+                    total_portfolio_val=total_current_portfolio_val
+                )
+
             # OPTIMALIZACE POPLATKŮ
             valid_targets = [w for w in effective_targets.values() if w > 0]
             min_target = min(valid_targets) if valid_targets else 1.0
@@ -1649,7 +1748,7 @@ class CzechInvestorApp:
             
             # 4. Formátování řádků pro UI
             for t, target in effective_targets.items():
-                if target <= 1e-6: continue
+                if target <= EPSILON_WEIGHT: continue
                 
                 try:
                     cur = self.get_currency_for_ticker(t)
@@ -1684,9 +1783,16 @@ class CzechInvestorApp:
                     qty_rounded = round(qty, 3)
                     orig_val = qty_rounded * price
                     
+                    # Formátování cílové váhy - pokud je zapnutý posuv, ukážeme i původní cíl v závorce
+                    if getattr(self, 'drifting_targets_enabled', False):
+                        orig_target = TARGETS.get(t, target)
+                        target_str = f"{target:.1%} ({orig_target:.1%})".replace('.', ',')
+                    else:
+                        target_str = f"{target:.1%}".replace('.', ',')
+                    
                     row_tuple = (
                         t, 
-                        f"{target:.1%}".replace('.', ','), 
+                        target_str, 
                         f"{price:.2f}".replace('.', ','), 
                         f"{fx_rate:.1f}".replace('.', ','), 
                         f"{czk_alloc:.0f}",
@@ -1717,9 +1823,10 @@ class CzechInvestorApp:
         self.hide_loading(self.planner_loading_state)
         self.btn_calc_buys.config(state=tk.NORMAL)
         
-        # Odemknutí prvků pro optimalizaci poplatků
+        # Odemknutí prvků pro optimalizaci poplatků a posuvu vah
         if hasattr(self, 'opt_fee_checkbox'): self.opt_fee_checkbox.config(state=tk.NORMAL)
         if hasattr(self, 'fee_entry'): self.fee_entry.config(state=tk.NORMAL)
+        if hasattr(self, 'cb_drift'): self.cb_drift.config(state=tk.NORMAL)
 
     def _populate_buy_tree(self, rows, info_data=None):
         """Pomocná metoda pro bezpečné vypsání dat do tabulky v UI vlákně."""
@@ -3105,6 +3212,14 @@ class CzechInvestorApp:
                 except Exception as e:
                     print(f"[!] Chyba rebalančního cílování: {e}")
 
+            # DYNAMICKÝ POSUV VAH (DRIFTING TARGETS)
+            if getattr(self, 'drifting_targets_enabled', False) and total_current_portfolio_val > 0:
+                effective_targets = self._apply_drifting_targets(
+                    current_targets=effective_targets,
+                    current_holdings_val=current_holdings_val,
+                    total_portfolio_val=total_current_portfolio_val
+                )
+
             # 3. Identifikace nadhodnocených pozic
             rows_to_insert = []
             total_raised_czk = 0.0
@@ -3246,11 +3361,20 @@ class CzechInvestorApp:
                 else:
                     current_holdings_val[t] = 0.0
 
+            # --- DYNAMICKÝ POSUV VAH (DRIFTING TARGETS) ---
+            effective_targets = TARGETS.copy()
+            if getattr(self, 'drifting_targets_enabled', False) and total_current_portfolio_val > 0:
+                effective_targets = self._apply_drifting_targets(
+                    current_targets=effective_targets,
+                    current_holdings_val=current_holdings_val,
+                    total_portfolio_val=total_current_portfolio_val
+                )
+
             if target_cash > total_current_portfolio_val:
                 self.root.after(0, lambda: messagebox.showerror("Chyba", "Požadovaná částka přesahuje aktuální hodnotu celého portfolia!"))
                 return
 
-            valid_targets =[w for w in TARGETS.values() if w > 0]
+            valid_targets =[w for w in effective_targets.values() if w > 0]
             min_target = min(valid_targets) if valid_targets else 1.0
 
             low = 0.0
@@ -3260,7 +3384,7 @@ class CzechInvestorApp:
             for _ in range(50):
                 mid = (low + high) / 2.0
                 cash_raised = 0.0
-                for t, target in TARGETS.items():
+                for t, target in effective_targets.items():
                     ideal_val = mid * target
                     curr_val = current_holdings_val.get(t, 0.0)
                     if curr_val > ideal_val:
@@ -3273,7 +3397,7 @@ class CzechInvestorApp:
                     virtual_total = mid
 
             rows_to_insert =[]
-            for t, target in TARGETS.items():
+            for t, target in effective_targets.items():
                 ideal_val = virtual_total * target
                 curr_val = current_holdings_val.get(t, 0.0)
 
@@ -4863,7 +4987,7 @@ class CzechInvestorApp:
         # 1. Agregace dat podle vah
         for i, t in enumerate(self.ordered_tickers):
             w = weights[i]
-            if w <= 1e-6: continue
+            if w <= EPSILON_WEIGHT: continue
             
             meta = db.get(t, {})
             sector = meta.get("sector", "Unknown")
@@ -5088,7 +5212,7 @@ class CzechInvestorApp:
         def decay_portfolio_weights(w_nom):
             min_allowed_weights = w_nom * DYN_TARGET_MIN_WEIGHT_FRACTION
             rem_weight = 1.0 - np.sum(min_allowed_weights)
-            lowest_yield_available = np.min(yields_array[w_nom > 1e-6]) if np.any(w_nom > 1e-6) else 0.0
+            lowest_yield_available = np.min(yields_array[w_nom > EPSILON_WEIGHT]) if np.any(w_nom > EPSILON_WEIGHT) else 0.0
             
             true_min_portfolio_yield = np.sum(min_allowed_weights * yields_array) + (rem_weight * lowest_yield_available)
             safe_target_yield = max(target_yield, true_min_portfolio_yield + DYN_YIELD_TOLERANCE)
@@ -5105,7 +5229,7 @@ class CzechInvestorApp:
             growth_credit = np.maximum(0, growths_array) * 0.75
             toxic_yield = np.maximum(0, yields_array - growth_credit)
             
-            active_mask = w_nom > 1e-6
+            active_mask = w_nom > EPSILON_WEIGHT
             if np.any(active_mask):
                 toxic_yield[active_mask] -= np.min(toxic_yield[active_mask])
             
@@ -5522,7 +5646,7 @@ class CzechInvestorApp:
         self.tax_estimate_lbl = tk.Label(tax_info_frame, text=f"Odhad daně za rok {datetime.now().year}: 0 Kč", font=("Arial", 11, "bold"), bg="#ECEFF1", fg="#BF360C")
         self.tax_estimate_lbl.pack()
         
-        self.btn_export_tax = tk.Button(ctrl_panel, text="📄 EXPORT PDF (DANĚ)", 
+        self.btn_export_tax = tk.Button(ctrl_panel, text="📄 EXPORT PDF + XML (DANĚ)", 
                                         command=self.generate_tax_report, 
                                         font=("Arial", 12, "bold"), bg="#E65100", fg="white")
         self.btn_export_tax.pack(side=tk.RIGHT, padx=10)
@@ -6035,7 +6159,7 @@ class CzechInvestorApp:
                             self.ax2.bar(x[i], abs(g), bottom=t, color='#FFD54F', label='Div. kryjící ztrátu' if i==x[-1] else "")
 
             self.ax2.grid(True, linestyle='--', alpha=0.5)
-            self.ax2.set_ylabel("Skutečný zisk [Kč]")
+            self.ax2.set_ylabel("Zisk [Kč]")
             
             legend_elements =[
                 Patch(facecolor='grey', label='Simulace (růst/ztráta)'), 
