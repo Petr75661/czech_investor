@@ -3697,6 +3697,10 @@ class CzechInvestorApp:
         self.div_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         div_scroll.config(command=self.div_tree.yview)
 
+        # --- Zvýrazňování řádků podle vybrané akcie ---
+        self.div_tree.tag_configure("highlight", background="#FFF9C4", font=("Arial", 12, "bold"))
+        self.div_tree.bind("<<TreeviewSelect>>", self._on_div_tree_select)
+
         chart_frame = tk.Frame(content_frame, bg="white", width=400)
         chart_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False, padx=(10, 0))
         
@@ -3736,6 +3740,27 @@ class CzechInvestorApp:
         self.btn_refresh_divs.config(state=tk.NORMAL)
         self.rb_div_target.config(state=tk.NORMAL)
         self.rb_div_real.config(state=tk.NORMAL)
+
+    def _on_div_tree_select(self, event):
+        """Zvýrazní všechny výplaty od stejné akcie po kliknutí na řádek."""
+        selection = self.div_tree.selection()
+        if not selection:
+            return
+            
+        # Přečteme ticker z právě kliknutého řádku (sloupec Ticker má index 1)
+        selected_item = selection[0]
+        selected_ticker = str(self.div_tree.item(selected_item, "values")[1])
+        
+        # Projdeme celou tabulku dividend a obarvíme ty řádky, kde se shoduje ticker
+        for item in self.div_tree.get_children():
+            row_ticker = str(self.div_tree.item(item, "values")[1])
+            
+            if row_ticker == selected_ticker:
+                # Nastavíme vytvořený tag (zvýrazňovač)
+                self.div_tree.item(item, tags=("highlight",))
+            else:
+                # Ostatní řádky vrátíme do původního stavu
+                self.div_tree.item(item, tags=())
 
     def refresh_dividends(self):
         try:
