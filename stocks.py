@@ -1207,21 +1207,44 @@ class CzechInvestorApp:
         tree_container = tk.Frame(calc_frame, bg="#f0f2f5")
         tree_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
 
-        tree_scroll = ttk.Scrollbar(tree_container)
+        # LEVÝ PANEL (Checkboxy pro vyřazení akcií)
+        self.buy_cb_frame = tk.LabelFrame(tree_container, text="Koupit", bg="#f0f2f5", font=("Arial", 12, "bold"))
+        self.buy_cb_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+
+        self.buy_cb_canvas = tk.Canvas(self.buy_cb_frame, bg="#f0f2f5", width=90, highlightthickness=0)
+        cb_scroll = ttk.Scrollbar(self.buy_cb_frame, orient="vertical", command=self.buy_cb_canvas.yview)
+        self.buy_cb_inner_frame = tk.Frame(self.buy_cb_canvas, bg="#f0f2f5")
+
+        self.buy_cb_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        cb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.buy_cb_canvas.configure(yscrollcommand=cb_scroll.set)
+        self.buy_cb_canvas.create_window((0,0), window=self.buy_cb_inner_frame, anchor="nw")
+        self.buy_cb_inner_frame.bind("<Configure>", lambda e: self.buy_cb_canvas.configure(scrollregion=self.buy_cb_canvas.bbox("all")))
+        
+        # Posouvání kolečkem myši u checkboxů
+        self.buy_cb_canvas.bind("<Enter>", lambda e: self.buy_cb_canvas.bind_all("<MouseWheel>", lambda ev: self.buy_cb_canvas.yview_scroll(int(-1*(ev.delta/120)), "units")))
+        self.buy_cb_canvas.bind("<Leave>", lambda e: self.buy_cb_canvas.unbind_all("<MouseWheel>"))
+
+        self.buy_active_vars = {}
+        self._build_buy_checkboxes()
+
+        # PRAVÝ PANEL (Samotná tabulka nákupů)
+        tree_right_frame = tk.Frame(tree_container, bg="#f0f2f5")
+        tree_right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        tree_scroll = ttk.Scrollbar(tree_right_frame)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         rows_needed = len(TARGETS)
-        # Necháme tabulce výšku přesně podle počtu cílů, ale dáme rezervu max na 20
         tree_height = min(rows_needed, 20)
 
-        self.buy_tree = ttk.Treeview(tree_container, columns=("Ticker", "Cíl %", "Cena trh [USD/GBP]", "FX", "CZK (Návrh)", "Hodnota [USD/GBP]", "Ks (Návrh)"), 
+        self.buy_tree = ttk.Treeview(tree_right_frame, columns=("Ticker", "Cíl %", "Cena trh [USD/GBP]", "FX", "CZK (Návrh)", "Hodnota [USD/GBP]", "Ks (Návrh)"), 
                                      show="headings", height=tree_height, yscrollcommand=tree_scroll.set)
         
         for c, w in {"Ticker":90, "Cíl %":70, "Cena trh [USD/GBP]":90, "FX":70, "CZK (Návrh)":120, "Hodnota [USD/GBP]":120, "Ks (Návrh)":120}.items():
             self.buy_tree.heading(c, text=c)
             self.buy_tree.column(c, width=w, anchor="center")
         
-        # Přidán parametr fill=tk.BOTH, aby se tabulka správně natáhla
         self.buy_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_scroll.config(command=self.buy_tree.yview)
         self.buy_tree.bind("<<TreeviewSelect>>", self.fill_entry_from_proposal)
@@ -1285,6 +1308,31 @@ class CzechInvestorApp:
         self.staging_tree.bind("<Double-1>", self.delete_staging_row)
                   
         self.planner_loading_state = self._create_loading_card(main_frame)
+
+    def _build_buy_checkboxes(self):
+        """Vygeneruje checkboxy pro povolení/zakázání nákupu jednotlivých akcií."""
+        if not hasattr(self, 'buy_cb_inner_frame'): return
+        
+        # Vyčistit staré checkboxy (při změně portfolia)
+        for widget in self.buy_cb_inner_frame.winfo_children():
+            widget.destroy()
+            
+        # Aktualizovat proměnné pro nové akcie
+        for t in TARGETS.keys():
+            if t not in self.buy_active_vars:
+                self.buy_active_vars[t] = tk.BooleanVar(value=True)
+                
+        # Vytvořit UI
+        for t in sorted(TARGETS.keys()):
+            if TARGETS[t] <= 1e-6: continue
+            cb = tk.Checkbutton(self.buy_cb_inner_frame, text=t, variable=self.buy_active_vars[t], 
+                                bg="#f0f2f5", font=("Arial", 11), command=self._on_buy_cb_change)
+            cb.pack(anchor="w", padx=2, pady=1)
+
+    def _on_buy_cb_change(self):
+        """Přepočítá nákup, pokud uživatel odškrtne akcii."""
+        if hasattr(self, 'buy_tree') and self.buy_tree.get_children() and self.btn_calc_buys['state'] == tk.NORMAL:
+            self.start_calculate_buys()
 
     def _on_fee_opt_change(self, event=None):
         """Spustí automatický přepočet nákupů při změně nastavení poplatků."""
@@ -1497,6 +1545,9 @@ class CzechInvestorApp:
         if hasattr(self, 'opt_fee_checkbox'): self.opt_fee_checkbox.config(state=tk.DISABLED)
         if hasattr(self, 'fee_entry'): self.fee_entry.config(state=tk.DISABLED)
         if hasattr(self, 'cb_drift'): self.cb_drift.config(state=tk.DISABLED)
+        if hasattr(self, 'buy_cb_inner_frame'):
+            for cb in self.buy_cb_inner_frame.winfo_children():
+                cb.config(state=tk.DISABLED)
         
         for i in self.buy_tree.get_children(): self.buy_tree.delete(i)
         
@@ -1640,6 +1691,24 @@ class CzechInvestorApp:
                     current_holdings_val=current_holdings_val,
                     total_portfolio_val=total_current_portfolio_val
                 )
+
+            # VYŘAZENÍ AKCIÍ ODŠKRTNUTÝCH UŽIVATELEM
+            if not hasattr(self, 'buy_active_vars'):
+                self.buy_active_vars = {t: tk.BooleanVar(value=True) for t in TARGETS.keys()}
+                
+            for t in list(effective_targets.keys()):
+                if t in self.buy_active_vars and not self.buy_active_vars[t].get():
+                    effective_targets[t] = 0.0 # Vynulujeme cíl, nedostane z investice nic
+                    
+            # Důležité: Váhy musíme znovu normalizovat na 100 %, 
+            # jinak by "Virtual Total" ve waterfillingu zanechal část peněz nevyužitou!
+            sum_eff = sum(effective_targets.values())
+            if sum_eff > 0:
+                for t in effective_targets:
+                    effective_targets[t] /= sum_eff
+            else:
+                self.root.after(0, lambda: messagebox.showwarning("Chyba", "Všechny akcie byly odškrtnuty. Není co nakoupit."))
+                return
 
             # OPTIMALIZACE POPLATKŮ
             valid_targets = [w for w in effective_targets.values() if w > 0]
@@ -1804,8 +1873,9 @@ class CzechInvestorApp:
                     raw_rows_data.append((czk_alloc, row_tuple))
                 except Exception as e: print(f"Skipping {t}: {e}")
 
-            # 5. Seřazení: od největšího nákupu po nejmenší (ty s 0 jsou na konci)
-            raw_rows_data.sort(key=lambda x: x[0], reverse=True)
+            # 5. Seřazení: Primárně od největšího nákupu po nejmenší, sekundárně abecedně
+            # Použijeme trik s mínusem u alokace (-x[0]), abychom pro tickery (x[1][0]) zachovali klasické A-Z řazení.
+            raw_rows_data.sort(key=lambda x: (-x[0], x[1][0]))
             rows_to_insert = [r[1] for r in raw_rows_data]
 
             # Bezpečný zápis do UI z hlavního vlákna (bezpečné pro Tkinter)
@@ -1827,6 +1897,9 @@ class CzechInvestorApp:
         if hasattr(self, 'opt_fee_checkbox'): self.opt_fee_checkbox.config(state=tk.NORMAL)
         if hasattr(self, 'fee_entry'): self.fee_entry.config(state=tk.NORMAL)
         if hasattr(self, 'cb_drift'): self.cb_drift.config(state=tk.NORMAL)
+        if hasattr(self, 'buy_cb_inner_frame'):
+            for cb in self.buy_cb_inner_frame.winfo_children():
+                cb.config(state=tk.NORMAL)
 
     def _populate_buy_tree(self, rows, info_data=None):
         """Pomocná metoda pro bezpečné vypsání dat do tabulky v UI vlákně."""
@@ -5646,6 +5719,10 @@ class CzechInvestorApp:
                 self.dyn_yield_cap = max_slider
                 self.save_data()
 
+        # Aktualizace checkboxů na kartě nákupů
+        if hasattr(self, '_build_buy_checkboxes'):
+            self._build_buy_checkboxes()
+            
         messagebox.showinfo("Úspěch", "Nové cílové váhy byly úspěšně aplikovány a uloženy do souboru. Záložka Nákupu bude nyní počítat návrhy s těmito novými vahami.")
 
     # --------------------------------------------------------------------------
@@ -7351,6 +7428,10 @@ class CzechInvestorApp:
             lambda: self.initialize_tuner_data(force_download=True), 
             "Stahuji data a simuluji..."
         ))
+        
+        # Aktualizace checkboxů na kartě nákupů
+        if hasattr(self, '_build_buy_checkboxes'):
+            self._build_buy_checkboxes()
         
     def get_currency_for_ticker(self, ticker):
         """Bezpečně zjistí měnu pro daný ticker z konfigurace, DB nebo odhadem."""
