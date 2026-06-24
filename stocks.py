@@ -1088,7 +1088,7 @@ class CzechInvestorApp:
         final_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Prostřední formulář. Pevná výška (expand=False), zůstává zakotven dole.
-        edit_frame = tk.LabelFrame(main_frame, text="2. Skutečná realizace (Zadejte dle výpisu brokera)", bg="#E3F2FD", padx=10, pady=10, font=("Arial", 12, "bold"))
+        edit_frame = tk.LabelFrame(main_frame, text="2. Skutečná realizace (zadejte dle výpisu brokera)", bg="#E3F2FD", padx=10, pady=10, font=("Arial", 12, "bold"))
         edit_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
 
         # Horní rámeček (Kalkulátor).
@@ -3032,7 +3032,7 @@ class CzechInvestorApp:
         top_panel.pack(fill=tk.X, padx=10, pady=5)
 
         # 1. Kalkulátor výběru hotovosti
-        calc_frame = tk.LabelFrame(top_panel, text="1. Návrh prodeje pro výběr hotovosti", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#E8F5E9")
+        calc_frame = tk.LabelFrame(top_panel, text="Návrh prodeje pro výběr hotovosti", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#E8F5E9")
         calc_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
         tk.Label(calc_frame, text="Částka k výběru (Kč):", font=("Arial", 12), bg="#E8F5E9").grid(row=0, column=0, padx=5)
@@ -3044,14 +3044,14 @@ class CzechInvestorApp:
         self.btn_calc_sale.grid(row=0, column=2, padx=10)
 
         # 2. NOVÝ: Kalkulátor pro rebalancování portfolia (zohledňuje nastavení brzdy)
-        rebal_frame = tk.LabelFrame(top_panel, text="2. Návrh prodeje pro rebalancování", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#FFF3E0")
+        rebal_frame = tk.LabelFrame(top_panel, text="Návrh prodeje pro rebalancování", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#FFF3E0")
         rebal_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
         self.btn_calc_rebal = tk.Button(rebal_frame, text="Spočítat rebalancování", command=self.start_calculate_rebalancing, bg="#E65100", fg="white", font=("Arial", 12, "bold"))
         self.btn_calc_rebal.grid(row=0, column=0, padx=50)
 
         # 3. Ruční zadání / Úprava ceny (přejmenováno z 2 na 3)
-        manual_frame = tk.LabelFrame(top_panel, text="3. Ruční zadání / Úprava ceny", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#E3F2FD")
+        manual_frame = tk.LabelFrame(top_panel, text="Ruční zadání / Úprava ceny", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#E3F2FD")
         manual_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         tk.Label(manual_frame, text="Ticker:", font=("Arial", 12), bg="#E3F2FD").grid(row=0, column=0)
@@ -3074,7 +3074,7 @@ class CzechInvestorApp:
 
         # --- STŘEDNÍ PANEL: Tabulka k prodeji (Staging) ---
         # expand=True pro tuto tabulku, takže zabere dostupné místo
-        staging_frame = tk.LabelFrame(frame, text="3. Seznam připravených prodejů", padx=10, pady=5, font=("Arial", 12, "bold"), bg="#fff")
+        staging_frame = tk.LabelFrame(frame, text="Seznam připravených prodejů", padx=10, pady=5, font=("Arial", 12, "bold"), bg="#fff")
         staging_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         # Červené tlačítko zabalíme úplně dolů
@@ -3105,7 +3105,7 @@ class CzechInvestorApp:
 
         # --- SPODNÍ PANEL: Ledger (Aktuální stav) ---
         # expand=False (neporoste při maximalizaci okna)
-        ledger_frame = tk.LabelFrame(frame, text="4. Aktuální stav portfolia (ledger)", padx=10, pady=5, font=("Arial", 12, "bold"), bg="#fff")
+        ledger_frame = tk.LabelFrame(frame, text="Aktuální stav portfolia (ledger)", padx=10, pady=5, font=("Arial", 12, "bold"), bg="#fff")
         ledger_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
 
         top_ledger_bar = tk.Frame(ledger_frame, bg="#fff")
