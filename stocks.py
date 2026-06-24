@@ -3047,9 +3047,8 @@ class CzechInvestorApp:
         rebal_frame = tk.LabelFrame(top_panel, text="2. Návrh prodeje pro rebalancování", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#FFF3E0")
         rebal_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
-        tk.Label(rebal_frame, text="Srovná nadbytečné pozice s cílem.", font=("Arial", 12), bg="#FFF3E0").grid(row=0, column=0, padx=5)
         self.btn_calc_rebal = tk.Button(rebal_frame, text="Spočítat rebalancování", command=self.start_calculate_rebalancing, bg="#E65100", fg="white", font=("Arial", 12, "bold"))
-        self.btn_calc_rebal.grid(row=0, column=1, padx=10)
+        self.btn_calc_rebal.grid(row=0, column=0, padx=50)
 
         # 3. Ruční zadání / Úprava ceny (přejmenováno z 2 na 3)
         manual_frame = tk.LabelFrame(top_panel, text="3. Ruční zadání / Úprava ceny", padx=10, pady=10, font=("Arial", 12, "bold"), bg="#E3F2FD")
