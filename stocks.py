@@ -1122,11 +1122,15 @@ class CzechInvestorApp:
         self.fee_entry.pack(side=tk.LEFT, padx=5)
         self.fee_entry.insert(0, str(getattr(self, 'fee_percent', DEFAULT_FEE_PERCENT)).replace('.', ','))
         
+        # Počáteční stav podle toho, zda je optimalizace zapnutá
+        initial_fee_state = tk.NORMAL if getattr(self, 'optimize_fees_enabled', True) else tk.DISABLED
+        self.fee_entry.config(state=initial_fee_state)
+
         # Automatický přepočet i při stisku Enter uvnitř políčka pro procenta
         self.fee_entry.bind("<Return>", self._on_fee_opt_change)
 
         tk.Label(top_bar, text="%", font=("Arial", 12), bg="#f0f2f5").pack(side=tk.LEFT)
-
+        
         # --- Checkbox pro Dynamický posuv vah (Drifting Targets) ---
         self.drift_var = tk.BooleanVar(value=getattr(self, 'drifting_targets_enabled', False))
         self.cb_drift = tk.Checkbutton(top_bar, text="Dynamický posuv vah (nechat vítěze růst)", 
@@ -1141,6 +1145,19 @@ class CzechInvestorApp:
                     "aniž byste ztratili výhodu automatického rebalancování propadlíků.")
         self.cb_drift.bind("<Enter>", lambda e: self._show_tooltip(tt_drift))
         self.cb_drift.bind("<Leave>", lambda e: self._hide_tooltip())
+
+        # Tooltip pro políčko poplatků
+        tt_fee = ("⚙️ Jak funguje optimalizace poplatků:\n"
+                  "───────────────────────────────────\n"
+                  "Aplikace zohledňuje minimální fixní poplatky brokera\n"
+                  "(IBKR Tiered: 0.35 USD pro americké a 1.00 GBP pro britské akcie).\n\n"
+                  "Pokud by navržená částka k nákupu akcie byla tak malá, že by fixní poplatek\n"
+                  "překročil vámi zadaný limit (např. 0,5 % z investice), aplikace tento nákup zruší.\n\n"
+                  "Uvolněný kapitál následně chytře přerozdělí (metodou Water-Filling) do ostatních\n"
+                  "podvážených akcií, u kterých se už nákup z hlediska poplatku vyplatí.\n"
+                  "Zabráníte tak zbytečnému 'vykrvácení' na poplatcích při drobných dokupech.")
+        self.fee_entry.bind("<Enter>", lambda e: self._show_tooltip(tt_fee))
+        self.fee_entry.bind("<Leave>", lambda e: self._hide_tooltip())
 
         # Rámeček pro Dynamické řízení portfolia
         dyn_frame = tk.Frame(calc_frame, bg="#E3F2FD", padx=5, pady=5, relief=tk.RIDGE, borderwidth=1)
@@ -1336,6 +1353,11 @@ class CzechInvestorApp:
 
     def _on_fee_opt_change(self, event=None):
         """Spustí automatický přepočet nákupů při změně nastavení poplatků."""
+        # Okamžitá vizuální změna stavu políčka (zešednutí / odblokování)
+        new_state = tk.NORMAL if self.opt_fee_var.get() else tk.DISABLED
+        if hasattr(self, 'fee_entry'):
+            self.fee_entry.config(state=new_state)
+
         # 1. Uložíme aktuální stav do paměti
         try:
             self.fee_percent = float(self.fee_entry.get().replace(',', '.'))
@@ -1895,7 +1917,11 @@ class CzechInvestorApp:
         
         # Odemknutí prvků pro optimalizaci poplatků a posuvu vah
         if hasattr(self, 'opt_fee_checkbox'): self.opt_fee_checkbox.config(state=tk.NORMAL)
-        if hasattr(self, 'fee_entry'): self.fee_entry.config(state=tk.NORMAL)
+        
+        # Zpětné odemknutí políčka poplatku POZOR: Jen pokud je optimalizace zapnutá!
+        if hasattr(self, 'fee_entry'): 
+            self.fee_entry.config(state=tk.NORMAL if self.opt_fee_var.get() else tk.DISABLED)
+            
         if hasattr(self, 'cb_drift'): self.cb_drift.config(state=tk.NORMAL)
         if hasattr(self, 'buy_cb_inner_frame'):
             for cb in self.buy_cb_inner_frame.winfo_children():
@@ -5653,7 +5679,7 @@ class CzechInvestorApp:
         if view_mode in ["base", "base_decay"]:
             self.ax_bars.bar(x, bars_main, width*2, label='Total return', color=main_color)
         else:
-            self.ax_bars.bar(x - width/2, bars_ref, width, label='Základ', color='lightgrey')
+            self.ax_bars.bar(x - width/2, bars_ref, width, label='Výchozí', color='lightgrey')
             self.ax_bars.bar(x + width/2, bars_main, width, label='Nové', color='#4CAF50')
         
         # ---------------------------------------------------------------------
