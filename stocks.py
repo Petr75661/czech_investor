@@ -2164,37 +2164,106 @@ class CzechInvestorApp:
                 key = (t, d)
                 existing_aggregated_sales[key] = existing_aggregated_sales.get(key, 0.0) + q
 
-            # --- KROK 3A: Vložení chybějících nákupů do Staging fronty ---
+            # --- KROK 3A: Úprava existujících nákupů a vložení chybějících do Stagingu ---
             added_buys_count = 0
+            corrected_lots_count = 0  # Nové počítadlo pro zpřesněné záznamy
+            
             for (t, d), data in csv_aggregated_buys.items():
                 csv_qty = data['qty']
                 csv_val = data['total_value']
                 exist_qty = existing_aggregated_buys.get((t, d), 0.0)
                 missing_qty = csv_qty - exist_qty
                 
-                if missing_qty > 0.0001:
-                    avg_price = csv_val / csv_qty if csv_qty > 0 else 0.0
-                    q_str = str(round(missing_qty, 4)).replace('.', ',')
-                    p_str = str(round(avg_price, 4)).replace('.', ',')
-                    self.staging_tree.insert("", "end", values=(t, d, q_str, p_str, "❌"))
-                    added_buys_count += 1
+                avg_price = csv_val / csv_qty if csv_qty > 0 else 0.0
+                
+                # 1. Zpřesnění ceny u všech existujících záznamů o nákupu z tohoto dne
+                lots_to_fix = [l for l in self.ledger.get(t, []) if l.get('date') == d]
+                sales_to_fix = [s for s in self.sales_history if s.get('ticker') == t and s.get('buy_date') == d]
+                
+                # Zápis do JSONu jako string (kvůli kompatibilitě se zbytkem kódu)
+                price_str = str(round(avg_price, 6))
+                
+                for l in lots_to_fix:
+                    if abs(safe_float(l.get('price_at_buy', 0)) - avg_price) > 0.001:
+                        l['price_at_buy'] = price_str
+                        corrected_lots_count += 1
+                        
+                for s in sales_to_fix:
+                    if abs(safe_float(s.get('buy_price', 0)) - avg_price) > 0.001:
+                        s['buy_price'] = avg_price
+                        corrected_lots_count += 1
 
-            # --- KROK 3B: Automatické zpracování chybějících prodejů (metodou FIFO) ---
-            missing_sales_to_execute =[]
+                # 2. Zpracování nepřesnosti v množství (Zaokrouhlení vs Faktická chyba)
+                if abs(missing_qty) > 0.0001:
+                    # Práh 0.05 kusu (zabrání tomu, aby se faktická chyba vydávala za zaokrouhlení)
+                    if abs(missing_qty) <= 0.05:
+                        # ZAOKROUHLOVACÍ CHYBA: Zpřesníme přímo existující lot a do stagingu nic nedáme
+                        if lots_to_fix:
+                            lots_to_fix[0]['qty'] = max(0.0001, safe_float(lots_to_fix[0]['qty']) + missing_qty)
+                            corrected_lots_count += 1
+                        elif sales_to_fix:
+                            sales_to_fix[0]['qty'] = max(0.0001, safe_float(sales_to_fix[0]['qty']) + missing_qty)
+                            corrected_lots_count += 1
+                        missing_qty = 0.0  # Vyřešeno, nepůjde do stagingu
+                    else:
+                        # FAKTICKÁ CHYBA: (Chybějící nákup z CSV)
+                        if missing_qty > 0:
+                            if t not in self.ledger:
+                                self.ledger[t] = []
+                            
+                            # Vložíme nákup z CSV rovnou do ostrého Ledgeru!
+                            # FX a poplatek dáme zatím provizorní, KROK 3D je za zlomek vteřiny přepíše přesnými údaji z CSV.
+                            self.ledger[t].append({
+                                "date": d,
+                                "qty": missing_qty,
+                                "price_at_buy": str(round(avg_price, 6)),
+                                "fx_rate": 23.0, 
+                                "fee": 0.0       
+                            })
+                            added_buys_count += 1
+                        # Pokud missing_qty < -0.05, neděláme nic, uživatel zapsal více než měl.
+                        # Následný Audit na konci importu tuto chybu odhalí.
+
+            # Seřazení Ledgeru (pokud jsme z CSV přidali nákupy) pro správné fungování FIFO a updatu poplatků
+            if added_buys_count > 0:
+                for t in self.ledger:
+                    self.ledger[t].sort(key=lambda x: x.get("date", "1970-01-01"))
+
+            # --- KROK 3B: Zpřesnění existujících prodejů a zpracování chybějících ---
+            missing_sales_to_execute = []
+            
             for (t, d), data in csv_aggregated_sales.items():
                 csv_qty = data['qty']
                 csv_val = data['total_value']
                 exist_qty = existing_aggregated_sales.get((t, d), 0.0)
                 missing_qty = csv_qty - exist_qty
-
-                if missing_qty > 0.0001:
-                    avg_price = csv_val / csv_qty if csv_qty > 0 else 0.0
-                    missing_sales_to_execute.append({
-                        'ticker': t,
-                        'sell_date': d,
-                        'qty': missing_qty,
-                        'sell_price': avg_price
-                    })
+                
+                avg_price = csv_val / csv_qty if csv_qty > 0 else 0.0
+                
+                # 1. Zpřesnění ceny u všech existujících záznamů o prodeji z tohoto dne
+                sales_to_fix = [s for s in self.sales_history if s.get('ticker') == t and s.get('sell_date') == d]
+                for s in sales_to_fix:
+                    if abs(safe_float(s.get('sell_price', 0)) - avg_price) > 0.001:
+                        s['sell_price'] = avg_price
+                        corrected_lots_count += 1
+                        
+                # 2. Zpracování nepřesnosti v množství
+                if abs(missing_qty) > 0.0001:
+                    if abs(missing_qty) <= 0.05:
+                        # ZAOKROUHLOVACÍ CHYBA: Zpřesníme přímo existující prodej
+                        if sales_to_fix:
+                            sales_to_fix[0]['qty'] = max(0.0001, safe_float(sales_to_fix[0]['qty']) + missing_qty)
+                            corrected_lots_count += 1
+                        missing_qty = 0.0
+                    else:
+                        # FAKTICKÁ CHYBA:
+                        if missing_qty > 0:
+                            missing_sales_to_execute.append({
+                                'ticker': t,
+                                'sell_date': d,
+                                'qty': missing_qty,
+                                'sell_price': avg_price
+                            })
 
             added_sales_count = 0
             failed_sales =[]
@@ -2479,16 +2548,22 @@ class CzechInvestorApp:
                         err_line = f"• {t}: V evidenci máte {aq_s}, broker hlásí {iq_s} (rozdíl {df_s} ks)"
                         audit_errors.append(err_line)
 
+            # Vynucená obnova stromu držených pozic na UI, pokud CSV zasáhlo do dat
+            if added_buys_count > 0 or added_sales_count > 0 or corrected_lots_count > 0:
+                self.update_lots_view()
+
             # --- FINÁLNÍ ZOBRAZENÍ VÝSLEDKŮ UŽIVATELI ---
             import_msg = ""
-            if added_buys_count > 0 or added_sales_count > 0 or added_divs > 0 or failed_sales:
+            if added_buys_count > 0 or added_sales_count > 0 or added_divs > 0 or corrected_lots_count > 0 or failed_sales:
                 import_msg = "Nalezeno a zpracováno:\n"
                 if added_buys_count > 0:
-                    import_msg += f"• {added_buys_count} nových nákupů (čekají dole na potvrzení)\n"
+                    import_msg += f"• {added_buys_count} nových nákupů (automaticky zapsáno do portfolia)\n"
                 if added_sales_count > 0:
                     import_msg += f"• {added_sales_count} nových prodejů (automaticky zapsáno pomocí FIFO)\n"
                 if added_divs > 0:
                     import_msg += f"• {added_divs} záznamů o dividendách a daních (automaticky uloženo)\n"
+                if corrected_lots_count > 0:
+                    import_msg += f"• Zpřesněny údaje (cena a množství) u {corrected_lots_count} existujících záznamů\n"
                 
                 # Zobrazení případného varování u prodejů
                 if failed_sales:
