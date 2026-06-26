@@ -3849,11 +3849,11 @@ class CzechInvestorApp:
         tree_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         cols_config = {
-            "Datum": 140, 
-            "Ticker": 80, 
-            "Částka": 160, 
-            "Stav": 160, 
-            "Nárok (CZK Hrubého)": 160
+            "Datum": 110,
+            "Ticker": 60,
+            "Částka": 210,
+            "Stav": 180,
+            "Nárok (CZK Hrubého)": 140
         }
         # Přidání vertikálního posuvníku
         div_scroll = ttk.Scrollbar(tree_frame)
@@ -4101,26 +4101,62 @@ class CzechInvestorApp:
                         
                         ticker_dividend_totals[t] = ticker_dividend_totals.get(t, 0) + czk_gross
                         
-                        # --- Zjištění případného propadu oproti loňsku ---
+                        # --- Zjištění částky na akcii a případného propadu oproti loňsku ---
                         warning_suffix = ""
-                        yf_equiv = gross_val * 100.0 if t.endswith(".L") else gross_val
-                        if not divs_last_yr.empty:
-                            target_yday = pay_date.timetuple().tm_yday
+                        per_share_val = 0.0
+                        ex_date_found = None
+                        
+                        # 1. Hledání nejbližšího předchozího ex-date z Yahoo (max 180 dní zpět)
+                        if 'hist_divs' in locals() and not hist_divs.empty:
+                            # Filtrujeme pouze ta data z historie, která jsou starší nebo rovna datu výplaty
+                            valid_ex_dates = hist_divs[hist_divs.index.date <= pay_date]
+                            if not valid_ex_dates.empty:
+                                closest_ex_date = valid_ex_dates.index[-1]
+                                delta_days = (pay_date - closest_ex_date.date()).days
+                                if delta_days <= 180:
+                                    per_share_val = valid_ex_dates.iloc[-1]
+                                    ex_date_found = closest_ex_date.date()
+
+                        # 2. Fallback: Pokud Yahoo data úplně chybí, odhadneme to z ledgeru
+                        if per_share_val == 0.0:
+                            # Pokud neznáme ex-date, 30 dní je bezpečnější odhad držení pro výpočet per-share
+                            ex_date_approx = pay_date - timedelta(days=30)
+                            qty_at_ex = sum(l['qty'] for l in current_lots if datetime.strptime(l['date'], "%Y-%m-%d").date() <= ex_date_approx)
+                            qty_sold_later = sum(s['qty'] for s in self.sales_history if s['ticker'] == t and datetime.strptime(s['buy_date'], "%Y-%m-%d").date() <= ex_date_approx and datetime.strptime(s['sell_date'], "%Y-%m-%d").date() > ex_date_approx)
+                            hist_qty = qty_at_ex + qty_sold_later
+                            
+                            if hist_qty > 0.001:
+                                if t.endswith(".L"): per_share_val = (gross_val / hist_qty) * 100.0
+                                else: per_share_val = gross_val / hist_qty
+
+                        # Výpočet propadu (porovnáváme částku na akcii s loňskou částkou na akcii)
+                        if not divs_last_yr.empty and per_share_val > 0:
+                            # Hledáme loňskou dividendu. Ideálně podle nalezeného Ex-Date, jinak Pay-Date.
+                            target_yday = ex_date_found.timetuple().tm_yday if ex_date_found else pay_date.timetuple().tm_yday
                             closest_last = None
-                            min_diff = 60 # U IBKR CSV je to Pay-Date, takže tolerance musí být větší (až měsíc po Ex-Date)
+                            min_diff = 60 
                             for d_last, amt_last in divs_last_yr.items():
                                 diff = abs(d_last.timetuple().tm_yday - target_yday)
                                 if diff < min_diff:
                                     min_diff = diff
                                     closest_last = amt_last
+                                    
                             if closest_last and closest_last > 0:
-                                ratio = yf_equiv / closest_last
+                                ratio = per_share_val / closest_last
                                 # Varování, pokud dividenda klesla o více než 10 % (ratio < 0.9).
-                                # Ignorujeme propady o více než 80 % (ratio < 0.2), to je typicky split akcií nebo jednorázová speciální dividenda.
+                                # Ignorujeme propady o více než 80 % (ratio < 0.2), to je typicky split akcií.
                                 if 0.2 < ratio < 0.9:
                                     warning_suffix = f" ⚠️ (-{(1 - ratio) * 100:.0f} %)"
                         
-                        txt = f"{gross_val:.2f} {currency}".replace('.', ',') + warning_suffix
+                        # Sestavení finálního textu
+                        if per_share_val > 0:
+                            if t.endswith(".L"):
+                                txt = f"{gross_val:.2f} {currency} ({per_share_val:.2f} p/ks)".replace('.', ',') + warning_suffix
+                            else:
+                                txt = f"{gross_val:.2f} {currency} ({per_share_val:.2f}/ks)".replace('.', ',') + warning_suffix
+                        else:
+                            txt = f"{gross_val:.2f} {currency}".replace('.', ',') + warning_suffix
+
                         calendar_rows.append({
                             "date": pay_date, 
                             "values": (format_cz_date(pay_date), t, txt, "✅ Vyplaceno (IBKR)", f"{czk_gross:.0f} Kč".replace('.', ',')),
@@ -4173,8 +4209,16 @@ class CzechInvestorApp:
                             else:
                                 status_txt = "Potvrzeno (budoucí Ex-date)"
 
-                            if t.endswith(".L"): val_c = amount / 100.0; txt = f"{amount:.2f} p".replace('.', ',')
-                            else: val_c = amount; txt = f"{amount:.2f} {CURRENCIES.get(t, 'USD')}".replace('.', ',')
+                            # --- Sjednocení zobrazení na celkovou částku (jako u CSV) + per-share v závorce ---
+                            if t.endswith(".L"): 
+                                val_c = amount / 100.0
+                                total_fc_gbp = valid_qty * val_c
+                                txt = f"{total_fc_gbp:.2f} GBP ({amount:.2f} p/ks)".replace('.', ',')
+                            else: 
+                                val_c = amount
+                                total_fc = valid_qty * amount
+                                curr_symbol = CURRENCIES.get(t, 'USD')
+                                txt = f"{total_fc:.2f} {curr_symbol} ({amount:.2f}/ks)".replace('.', ',')
                             
                             # --- Zjištění případného propadu oproti loňsku ---
                             warning_suffix = ""
@@ -4258,8 +4302,18 @@ class CzechInvestorApp:
                             
                         if today_date <= proj_date <= end_of_year:
                             projected_amount = amount * growth_factor
-                            if t.endswith(".L"): val_c = projected_amount / 100.0; txt = f"{projected_amount:.2f} p (projekce)".replace('.', ',')
-                            else: val_c = projected_amount; txt = f"{projected_amount:.2f} {CURRENCIES.get(t, 'USD')} (projekce)".replace('.', ',')
+                            
+                            # --- Sjednocení zobrazení na celkovou částku (jako u CSV) + per-share v závorce ---
+                            # Slovo "projekce" u částky rovnou mažeme, protože ve sloupci Stav se píše "Projekce (x1.02)", tak ať text není zbytečně dlouhý.
+                            if t.endswith(".L"): 
+                                val_c = projected_amount / 100.0
+                                total_fc_gbp = calc_qty_held_proj * val_c
+                                txt = f"{total_fc_gbp:.2f} GBP ({projected_amount:.2f} p/ks)".replace('.', ',')
+                            else: 
+                                val_c = projected_amount
+                                total_fc = calc_qty_held_proj * projected_amount
+                                curr_symbol = CURRENCIES.get(t, 'USD')
+                                txt = f"{total_fc:.2f} {curr_symbol} ({projected_amount:.2f}/ks)".replace('.', ',')
                             
                             czk_val = calc_qty_held_proj * val_c * fx.get(CURRENCIES.get(t, "USD"), 23.0)
                             net_czk_val = czk_val * (1.0 - tax_rate)
