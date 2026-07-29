@@ -1874,13 +1874,19 @@ class CzechInvestorApp:
                     qty_rounded = round(qty, 3)
                     orig_val = qty_rounded * price
                     
-                    # Formátování cílové váhy - pokud je zapnutý posuv, ukážeme i původní cíl v závorce
+                    # Formátování cílové váhy - šipky a původní cíl v závorce ukazujeme pouze při zapnutém posuvu vah
                     if getattr(self, 'drifting_targets_enabled', False):
-                        orig_target = TARGETS.get(t, target)
-                        target_str = f"{target:.1%} ({orig_target:.1%})".replace('.', ',')
+                        orig_target = TARGETS.get(t, 0.0)
+                        if target > orig_target + 0.0001:
+                            arrow = " ↑"
+                        elif target < orig_target - 0.0001:
+                            arrow = " ↓"
+                        else:
+                            arrow = ""
+                        target_str = f"{target:.1%}{arrow} ({orig_target:.1%})".replace('.', ',')
                     else:
                         target_str = f"{target:.1%}".replace('.', ',')
-                    
+
                     row_tuple = (
                         t, 
                         target_str, 
@@ -3216,8 +3222,8 @@ class CzechInvestorApp:
         tree_scroll = ttk.Scrollbar(ledger_frame)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self.lots_tree = ttk.Treeview(ledger_frame, columns=("Ticker", "Datum", "Množství", "Nákupní cena[GBP/USD]", "Daň"), show="headings", height=6, yscrollcommand=tree_scroll.set)
-        for c in ("Ticker", "Datum", "Množství", "Nákupní cena[GBP/USD]", "Daň"):
+        self.lots_tree = ttk.Treeview(ledger_frame, columns=("Ticker", "Datum", "Množství", "Nákupní cena [GBP/USD]", "Daň"), show="headings", height=6, yscrollcommand=tree_scroll.set)
+        for c in ("Ticker", "Datum", "Množství", "Nákupní cena [GBP/USD]", "Daň"):
             self.lots_tree.heading(c, text=c)
             self.lots_tree.column(c, anchor="center")
 
