@@ -2336,7 +2336,13 @@ class CzechInvestorApp:
                             "sell_date": s_date,
                             "qty": sold,
                             "buy_price": safe_float(lot.get('price_at_buy', 0)),
-                            "sell_price": s_price
+                            "sell_price": s_price,
+                            
+                            # Explicitní inicializace FX kurzů
+                            # Nastavíme je na 0.0, aby je KROK 3D bezpečně rozeznal
+                            # jako neplatné a nahradil je reálnými hodnotami.
+                            "buy_fx_rate": 0.0,
+                            "sell_fx_rate": 0.0
                         })
 
                         # Pokud jsme lot celý vyprodali, odstraníme ho z Ledgeru
@@ -2422,7 +2428,36 @@ class CzechInvestorApp:
             exact_fees_sales = {}
             idx_fee = header_row.index('Comm/Fee') if 'Comm/Fee' in header_row else -1
 
-            # Bezpečné stažení aktuálních kurzů pro případ chybějících dat
+            # Hromadné stažení historických FX kurzů z YFinance
+            # Stáhneme historii za posledních 5 let, abychom pokryli chybějící data z CSV.
+            try:
+                start_fx_date = (datetime.now() - timedelta(days=5*365)).strftime('%Y-%m-%d')
+                fx_history_raw = self._safe_yf_download(["USDCZK=X", "GBPCZK=X"], start=start_fx_date, auto_adjust=False)
+                fx_hist_df = fx_history_raw['Close'].ffill().bfill() if 'Close' in fx_history_raw else fx_history_raw.ffill().bfill()
+            except Exception as e:
+                print(f"[!] Nepodařilo se stáhnout historii FX pro CSV import: {e}")
+                fx_hist_df = pd.DataFrame()
+
+            def get_fallback_historical_fx(currency, date_str):
+                """Vyhledá historický kurz k danému datu v datech z YFinance."""
+                if currency not in ["USD", "GBP"]: return 23.0
+                col = "USDCZK=X" if currency == "USD" else "GBPCZK=X"
+                
+                # Pokud se data nestáhla, vrací aktuální dnešní kurz
+                if fx_hist_df.empty or col not in fx_hist_df.columns:
+                    return self.get_fx_rates().get(currency, 23.0)
+                    
+                try:
+                    dt = pd.Timestamp(date_str)
+                    # Ořízneme do daného data a vezmeme poslední známý kurz (řeší i víkendy)
+                    past = fx_hist_df[col].loc[:dt]
+                    if not past.empty:
+                        return float(past.iloc[-1])
+                    return float(fx_hist_df[col].iloc[0])
+                except:
+                    return self.get_fx_rates().get(currency, 23.0)
+
+            # Bezpečné stažení aktuálních kurzů pro úplný nouzový případ
             current_fx = self.get_fx_rates()
 
             for row in rows:
@@ -2463,8 +2498,10 @@ class CzechInvestorApp:
                     # Update FX
                     if d in exact_fx[curr]: 
                         lot['fx_rate'] = exact_fx[curr][d]
-                    elif lot.get('fx_rate', 23.0) < 15.0:
-                        lot['fx_rate'] = current_fx.get(curr, 23.0)
+                    else:
+                        # === OPRAVA: Použití historického data z YFinance namísto dneška ===
+                        if 'fx_rate' not in lot or lot['fx_rate'] < 15.0:
+                            lot['fx_rate'] = get_fallback_historical_fx(curr, d)
                     
                     # Update Poplatků (poměrné rozdělení, pokud byl lot rozdělen FIFO)
                     if key in exact_fees_buys:
@@ -2479,18 +2516,21 @@ class CzechInvestorApp:
                 b_date = sale['buy_date']
                 s_date = sale['sell_date']
                 
-                # Update FX
+                # --- Update FX kurzu pro NÁKUP ---
                 if b_date in exact_fx[curr]: 
                     sale['buy_fx_rate'] = exact_fx[curr][b_date]
-                elif sale.get('buy_fx_rate', 23.0) < 15.0: 
-                    sale['buy_fx_rate'] = current_fx.get(curr, 23.0)
+                else:
+                    if 'buy_fx_rate' not in sale or sale['buy_fx_rate'] < 15.0:
+                        sale['buy_fx_rate'] = get_fallback_historical_fx(curr, b_date)
                     
+                # --- Update FX kurzu pro PRODEJ ---
                 if s_date in exact_fx[curr]: 
                     sale['sell_fx_rate'] = exact_fx[curr][s_date]
-                elif sale.get('sell_fx_rate', 23.0) < 15.0: 
-                    sale['sell_fx_rate'] = current_fx.get(curr, 23.0)
+                else:
+                    if 'sell_fx_rate' not in sale or sale['sell_fx_rate'] < 15.0:
+                        sale['sell_fx_rate'] = get_fallback_historical_fx(curr, s_date)
                 
-                # Update Poplatků
+                # Update Poplatků (původní logika zůstává beze změny)
                 b_key = (t, b_date)
                 if b_key in exact_fees_buys:
                     total_buy_qty = csv_aggregated_buys.get(b_key, {}).get('qty', sale['qty'])
