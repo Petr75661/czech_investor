@@ -2860,7 +2860,10 @@ class CzechInvestorApp:
         (odhad času dosažení cílového pasivního příjmu)
         """
         try:
-            tickers = list(TARGETS.keys())
+            # Zahrnout nejen cíle, ale i všechny akcie reálně držené v Ledgeru
+            all_tickers_set = set(TARGETS.keys())
+            all_tickers_set.update(self.ledger.keys())
+            tickers = list(all_tickers_set)
             if not tickers:
                 return
 
