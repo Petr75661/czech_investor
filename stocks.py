@@ -4786,6 +4786,18 @@ class CzechInvestorApp:
     def initialize_tuner_data(self, force_download=True, n_sims=None, auto_improve=False):
         if n_sims is None:
             n_sims = MC_NO
+            
+        # Ochrana proti souběhu vláken (race condition)
+        # Zabrání kolizi ladění portfolia s tichým stahováním na pozadí
+        while getattr(self, 'tuner_preloading', False):
+            time.sleep(0.2)
+            
+        if hasattr(self, '_preload_thread_lock'):
+            with self._preload_thread_lock:
+                self.tuner_preloading = True
+        else:
+            self.tuner_preloading = True
+
         try:
             tickers = list(TARGETS.keys())
             
