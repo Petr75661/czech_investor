@@ -168,9 +168,11 @@ DEFAULT_STOCK_DB = {
     # -- ETF SEKTOR (UCITS VARIANTY PRO ČESKÉHO INVESTORA) --
     "VUSA.L": {"name": "Vanguard S&P 500 (Dist)", "sector": "ETF", "tags": [], "yield": 1.2, "growth": 30.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
     "CSPX.L": {"name": "iShares Core S&P 500 (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 31.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
+    "XDEW.L": {"name": "Xtrackers S&P 500 EqWt (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 14.2, "etf_type": "Acc", "currency": "USD", "country": "UK"},
     "VWRL.L": {"name": "Vanguard All-World (Dist)", "sector": "ETF", "tags": [], "yield": 1.6, "growth": 20.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
     "VWRA.L": {"name": "Vanguard All-World (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 21.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
     "VHYL.L": {"name": "Vanguard High Div (Dist)", "sector": "ETF", "tags": [], "yield": 3.5, "growth": 12.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
+    "VHYA.L": {"name": "Vanguard High Div (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 12.4, "etf_type": "Acc", "currency": "USD", "country": "UK"},
     "EQQQ.L": {"name": "iShares NASDAQ 100 (Dist)", "sector": "ETF", "tags": [], "yield": 0.5, "growth": 55.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
     "CNDX.L": {"name": "iShares NASDAQ 100 (Acc)", "sector": "ETF", "tags": [], "yield": 0.0, "growth": 56.0, "etf_type": "Acc", "currency": "USD", "country": "UK"},
     "IWDP.L": {"name": "iShares Global REITs (Dist)", "sector": "ETF", "tags": [], "yield": 3.8, "growth": 2.0, "etf_type": "Dist", "currency": "USD", "country": "UK"},
