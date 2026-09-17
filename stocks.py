@@ -559,13 +559,26 @@ class CzechInvestorApp:
                 with open(PORTFOLIO_FILE, "r") as f:
                     data = json.load(f)
                     
-                    saved_targets = data.get("targets", {})
-                    if saved_targets:
-                        TARGETS.clear()
-                        TARGETS.update({k: float(v) for k, v in saved_targets.items()})
-
-                    self.ethical_filters = data.get("ethical_filters", {k: True for k in TAGS})
+                    # --- předvolby ---
+                    self.presets = data.get("presets", {})
+                    self.current_preset_name = data.get("current_preset_name", "Portfolio 1")
                     
+                    # Zpětná kompatibilita: Pokud JSON neobsahuje presets, vytvoříme je ze starých dat
+                    if not self.presets:
+                        saved_targets = data.get("targets", {})
+                        saved_filters = data.get("ethical_filters", {k: True for k in TAGS})
+                        if saved_targets:
+                            self.presets["Portfolio 1"] = {"targets": saved_targets, "ethical_filters": saved_filters}
+                        else:
+                            self.presets["Portfolio 1"] = {"targets": TARGETS.copy(), "ethical_filters": saved_filters}
+                    
+                    # Načtení aktuální předvolby do globální proměnné TARGETS
+                    active_preset = self.presets.get(self.current_preset_name, list(self.presets.values())[0])
+                    if active_preset.get("targets"):
+                        TARGETS.clear()
+                        TARGETS.update({k: float(v) for k, v in active_preset["targets"].items()})
+                    self.ethical_filters = active_preset.get("ethical_filters", {k: True for k in TAGS})
+
                     if "stock_db" in data:
                         self.stock_db_from_json = data["stock_db"]
                         # Načtení měn pro VŠECHNY evidované akcie, i ty minulé
@@ -616,6 +629,9 @@ class CzechInvestorApp:
             except Exception as e: 
                 print(f"Varování při načítání JSON: {e}")
         
+        # Pokud soubor neexistuje
+        self.presets = {"Portfolio 1": {"targets": TARGETS.copy(), "ethical_filters": {k: True for k in TAGS}}}
+        self.current_preset_name = "Portfolio 1"
         self.ethical_filters = {k: True for k in TAGS}
         self.custom_min_w = MIN_W
         self.custom_max_w = MAX_W
@@ -626,8 +642,19 @@ class CzechInvestorApp:
         return {t:[] for t in TARGETS},[], {}
 
     def save_data(self):
+        # Aktualizace aktivní předvolby před uložením
+        if not hasattr(self, 'presets'): self.presets = {}
+        if not hasattr(self, 'current_preset_name'): self.current_preset_name = "Portfolio 1"
+        
+        self.presets[self.current_preset_name] = {
+            "targets": TARGETS.copy(), # Vytvoříme tvrdou nezávislou kopii
+            "ethical_filters": getattr(self, 'ethical_filters', {k: True for k in TAGS})
+        }
+
         data = {
-            "targets": TARGETS,  
+            "presets": self.presets,
+            "current_preset_name": self.current_preset_name,
+            "targets": TARGETS.copy(), # Pro jistotu nezávislá kopie i zde
             "holdings": self.ledger, 
             "sales_history": self.sales_history, 
             "uniform_rates": self.uniform_rates,
@@ -1019,6 +1046,21 @@ class CzechInvestorApp:
         if hasattr(self, 'tuner_checkboxes'):
             for cb in self.tuner_checkboxes:
                 if cb.winfo_exists(): cb.config(state=state)
+                
+        # --- Deaktivace Dropdownu a mazacího tlačítka ---
+        if hasattr(self, 'preset_combo') and self.preset_combo.winfo_exists():
+            # Combobox nesmí být "normal", aby do něj nešlo psát, musí být "readonly"
+            if state == tk.NORMAL:
+                self.preset_combo.config(state="readonly")
+            else:
+                self.preset_combo.config(state=tk.DISABLED)
+                
+        if hasattr(self, 'btn_del_preset') and self.btn_del_preset.winfo_exists():
+            # Smazat lze jen po odemčení UI a pouze pokud je více než 1 předvolba
+            if state == tk.NORMAL and len(getattr(self, 'presets', {})) > 1:
+                self.btn_del_preset.config(state=tk.NORMAL)
+            else:
+                self.btn_del_preset.config(state=tk.DISABLED)
         
         # Slidery vypínáme vždy. Zapínají se pak nezávisle pouze při úspěšné simulaci.
         if state == tk.DISABLED and hasattr(self, 'sliders'):
@@ -1336,17 +1378,25 @@ class CzechInvestorApp:
         for widget in self.buy_cb_inner_frame.winfo_children():
             widget.destroy()
             
-        # Aktualizovat proměnné pro nové akcie
-        for t in TARGETS.keys():
-            if t not in self.buy_active_vars:
-                self.buy_active_vars[t] = tk.BooleanVar(value=True)
-                
-        # Vytvořit UI
+        # Aktualizovat proměnné a vytvořit UI POUZE pro aktuálně aktivní akcie
+        new_vars = {}
         for t in sorted(TARGETS.keys()):
             if TARGETS[t] <= 1e-6: continue
-            cb = tk.Checkbutton(self.buy_cb_inner_frame, text=t, variable=self.buy_active_vars[t], 
+            
+            # Pokud už akcie dříve byla, zapamatujeme si její stav (zaškrtnutí), jinak výchozí True
+            if hasattr(self, 'buy_active_vars') and t in self.buy_active_vars:
+                val = self.buy_active_vars[t].get()
+            else:
+                val = True
+                
+            new_vars[t] = tk.BooleanVar(value=val)
+            
+            cb = tk.Checkbutton(self.buy_cb_inner_frame, text=t, variable=new_vars[t], 
                                 bg="#f0f2f5", font=("Arial", 11), command=self._on_buy_cb_change)
             cb.pack(anchor="w", padx=2, pady=1)
+            
+        # Staré proměnné zahodíme a nahradíme těmi čistými
+        self.buy_active_vars = new_vars
 
     def _on_buy_cb_change(self):
         """Přepočítá nákup, pokud uživatel odškrtne akcii."""
@@ -1595,7 +1645,13 @@ class CzechInvestorApp:
                 return
 
             fx = self.get_fx_rates()
-            all_tickers = list(TARGETS.keys())
+            
+            # Musíme zjistit tržní cenu celého majetku, nejen akcií v aktuálním TARGETS
+            all_tickers_set = set(TARGETS.keys())
+            for t, lots in self.ledger.items():
+                if sum(l['qty'] for l in lots) > 0.001:
+                    all_tickers_set.add(t)
+            all_tickers = list(all_tickers_set)
             
             try: 
                 # Použití robustního stahovače místo obyčejného yf.download pro větší stabilitu
@@ -3338,7 +3394,13 @@ class CzechInvestorApp:
                 wait_loops += 1
 
             fx = self.get_fx_rates()
-            all_tickers = list(TARGETS.keys())
+            
+            # Zahrnutí akcií, které sice nejsou v cílech, ale fyzicky je držíme
+            all_tickers_set = set(TARGETS.keys())
+            for t, lots in self.ledger.items():
+                if sum(l['qty'] for l in lots) > 0.001:
+                    all_tickers_set.add(t)
+            all_tickers = list(all_tickers_set)
             
             # 1. Stažení aktuálních tržních cen z Yahoo
             try:
@@ -3448,7 +3510,9 @@ class CzechInvestorApp:
             rows_to_insert = []
             total_raised_czk = 0.0
 
-            for t, target in effective_targets.items():
+            for t in all_tickers:
+                # Pokud akcie chybí v cílové předvolbě, přiřadíme jí cíl 0.0 (zcela nadhodnocená)
+                target = effective_targets.get(t, 0.0)
                 ideal_val = total_current_portfolio_val * target
                 curr_val = current_holdings_val.get(t, 0.0)
 
@@ -3537,7 +3601,12 @@ class CzechInvestorApp:
                 return
 
             fx = self.get_fx_rates()
-            all_tickers = list(TARGETS.keys())
+            
+            all_tickers_set = set(TARGETS.keys())
+            for t, lots in self.ledger.items():
+                if sum(l['qty'] for l in lots) > 0.001:
+                    all_tickers_set.add(t)
+            all_tickers = list(all_tickers_set)
 
             try:
                 if not hasattr(self, 'data_fetcher'):
@@ -3598,7 +3667,7 @@ class CzechInvestorApp:
                 self.root.after(0, lambda: messagebox.showerror("Chyba", "Požadovaná částka přesahuje aktuální hodnotu celého portfolia!"))
                 return
 
-            valid_targets =[w for w in effective_targets.values() if w > 0]
+            valid_targets = [w for w in effective_targets.values() if w > 0]
             min_target = min(valid_targets) if valid_targets else 1.0
 
             low = 0.0
@@ -3608,7 +3677,9 @@ class CzechInvestorApp:
             for _ in range(50):
                 mid = (low + high) / 2.0
                 cash_raised = 0.0
+                # OPRAVA: Pro Výběr hotovosti počítáme poměrově jen aktivní akcie v předvolbě
                 for t, target in effective_targets.items():
+                    if target <= 0.0: continue
                     ideal_val = mid * target
                     curr_val = current_holdings_val.get(t, 0.0)
                     if curr_val > ideal_val:
@@ -3620,8 +3691,10 @@ class CzechInvestorApp:
                     high = mid
                     virtual_total = mid
 
-            rows_to_insert =[]
+            rows_to_insert = []
+            # I výpis do tabulky ignoruje akcie, které už v předvolbě nejsou
             for t, target in effective_targets.items():
+                if target <= 0.0: continue
                 ideal_val = virtual_total * target
                 curr_val = current_holdings_val.get(t, 0.0)
 
@@ -4434,8 +4507,9 @@ class CzechInvestorApp:
         min_v = getattr(self, 'custom_min_w', MIN_W) * 100
         max_v = getattr(self, 'custom_max_w', MAX_W) * 100
         
-        str_min_init = f"{min_v:g}".replace('.', ',')
-        str_max_init = f"{max_v:g}".replace('.', ',')
+        # Pevné zaokrouhlení na 2 desetinná místa pro textová pole
+        str_min_init = f"{min_v:.2f}".replace('.', ',')
+        str_max_init = f"{max_v:.2f}".replace('.', ',')
         
         self.lbl_tuner_title = tk.Label(title_frame, text=f"Optimalizace ({str_min_init}-{str_max_init}%)", font=("Arial", 18, "bold"), bg="#FFF8E1")
         self.lbl_tuner_title.pack(side=tk.LEFT)
@@ -4504,8 +4578,16 @@ class CzechInvestorApp:
         self.tuner_vars = {}
         self.tuner_checkboxes =[] # Uložení referencí na checkboxy
         tickers = sorted(list(TARGETS.keys()))
+        
+        # Načtení předchozího stavu fixace (pokud existuje)
+        saved_vars = getattr(self, '_saved_tuner_vars', {})
+        
         for i, t in enumerate(tickers):
-            var = tk.BooleanVar(value=True) 
+            # Pokud je akcie nová (není v paměti), bude defaultně zaškrtnutá (True - aktivní)
+            # Pokud už existovala, převezme si svůj původní, tebou naklikaný stav.
+            is_active = saved_vars.get(t, True)
+            
+            var = tk.BooleanVar(value=is_active) 
             self.tuner_vars[t] = var
             cb = tk.Checkbutton(cb_frame, text=t, variable=var, bg="#FFF8E1", font=("Arial", 12), command=self.on_checkbox_toggle)
             cb.grid(row=i//3, column=i%3, sticky="w", padx=2)
@@ -4576,7 +4658,10 @@ class CzechInvestorApp:
         self.sliders['fgrowth'] = tk.Scale(slider_frame, orient=tk.HORIZONTAL, length=s_len, bg="#FFF8E1", resolution=0.1, showvalue=False, command=lambda v: self.on_slider_change('fgrowth', v))
         self.sliders['fgrowth'].grid(row=9, column=1)
         
-        for s in self.sliders.values(): s.config(state="disabled")
+        for s in self.sliders.values(): 
+            s.config(state="disabled")
+            # Přivázání fyzického kliknutí, které funguje i v 'disabled' stavu
+            s.bind("<Button-1>", self._on_slider_click)
 
         # --- BLOK ANALÝZY RIZIK (SEMAFOR) ---
         self.risk_frame_container = tk.LabelFrame(control_panel, text="Analýza rizik (nové portfolio)", bg="#FFF8E1", font=("Arial", 12, "bold"))
@@ -4644,11 +4729,31 @@ class CzechInvestorApp:
         viz_panel = tk.Frame(self.tuner_frame, bg="white")
         viz_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
         
+        # --- Přepínač předvoleb portfolií (Dropdown) ---
+        preset_frame = tk.Frame(viz_panel, bg="white")
+        preset_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        tk.Label(preset_frame, text="Aktivní předvolba:", bg="white", font=("Arial", 12, "bold")).pack(side=tk.LEFT)
+        
+        self.preset_combo = ttk.Combobox(preset_frame, values=list(self.presets.keys()), state="readonly", font=("Arial", 11), width=25)
+        self.preset_combo.set(self.current_preset_name)
+        self.preset_combo.pack(side=tk.LEFT, padx=10)
+        self.preset_combo.bind("<<ComboboxSelected>>", self._on_preset_switched)
+        
+        self.btn_del_preset = tk.Button(preset_frame, text="🗑 Smazat předvolbu", command=self._delete_current_preset, bg="#FFCDD2", fg="#C62828", font=("Arial", 10, "bold"))
+        self.btn_del_preset.pack(side=tk.LEFT)
+        
+        # Deaktivace smazání, pokud je k dispozici jen jedno portfolio
+        if len(self.presets) <= 1:
+            self.btn_del_preset.config(state=tk.DISABLED)
+
         # --- Přepínač zobrazení grafů ---
         toggle_frame = tk.Frame(viz_panel, bg="white")
         toggle_frame.pack(fill=tk.X, pady=(0, 5))
         
-        self.chart_view_var = tk.StringVar(value="new")
+        # Obnovení stavu přepínače grafů (pokud existuje), jinak výchozí "new"
+        last_view = getattr(self, '_last_chart_view', 'new')
+        self.chart_view_var = tk.StringVar(value=last_view)
         
         rb_new_decay = tk.Radiobutton(toggle_frame, text="Nové s dividendovou brzdou", variable=self.chart_view_var, value="new_decay", bg="white", font=("Arial", 12, "bold"), fg="#0288D1", command=self._redraw_tuner_charts)
         rb_new_decay.pack(side=tk.RIGHT, padx=5)
@@ -4663,6 +4768,10 @@ class CzechInvestorApp:
         rb_base.pack(side=tk.RIGHT, padx=5)
         
         tk.Label(toggle_frame, text="Zobrazení portfolia:", bg="white", font=("Arial", 12)).pack(side=tk.RIGHT, padx=10)
+
+        # Zavření předchozího grafu z paměti RAM před vytvořením nového
+        if hasattr(self, 'fig_tune'):
+            plt.close(self.fig_tune)
 
         self.fig_tune = plt.figure(figsize=(10, 8))
         self.fig_tune.patch.set_facecolor('white')
@@ -4690,6 +4799,127 @@ class CzechInvestorApp:
         self.updating_sliders = False 
         self.tuner_base_weights = TARGETS.copy() 
         self.tuner_loading_state = self._create_loading_card(self.tuner_frame)
+
+    def _on_preset_switched(self, event):
+        """Vyvoláno při změně položky v Dropdown listu předvoleb."""
+        new_name = self.preset_combo.get()
+        old_name = getattr(self, 'current_preset_name', "")
+        if new_name == old_name: return
+        
+        # 1. Uložení stavu radio buttonu pro grafy
+        if hasattr(self, 'chart_view_var'):
+            self._last_chart_view = self.chart_view_var.get()
+
+        # 2. ULOŽENÍ STAVU DO CACHE (aby se nemuselo znovu simulovat)
+        if not hasattr(self, '_preset_cache'): self._preset_cache = {}
+        
+        if getattr(self, 'sim_metrics', None) is not None and old_name:
+            self._preset_cache[old_name] = {
+                'sim_weights': self.sim_weights,
+                'sim_metrics': self.sim_metrics,
+                'current_sim_idx': self.current_sim_idx,
+                'ordered_tickers': getattr(self, 'ordered_tickers', []),
+                'tuner_hist_prices': getattr(self, 'tuner_hist_prices', pd.DataFrame()),
+                'tuner_cov_matrix': getattr(self, 'tuner_cov_matrix', pd.DataFrame()),
+                'tuner_stock_divs': getattr(self, 'tuner_stock_divs', np.array([])),
+                'tuner_stock_growths': getattr(self, 'tuner_stock_growths', np.array([])),
+                'tuner_period_returns': getattr(self, 'tuner_period_returns', pd.DataFrame()),
+                'tuner_safe_divs': getattr(self, 'tuner_safe_divs', np.array([])),
+                'tuner_upsides': getattr(self, 'tuner_upsides', np.array([])),
+                'tuner_fundamentals': getattr(self, 'tuner_fundamentals', {})
+            }
+        
+        self.current_preset_name = new_name
+        active_preset = self.presets[new_name]
+        
+        global TARGETS
+        TARGETS.clear()
+        TARGETS.update({k: float(v) for k, v in active_preset["targets"].items()})
+        self.ethical_filters = active_preset.get("ethical_filters", {k: True for k in TAGS})
+        
+        self.save_data()
+        
+        # VYČIŠTĚNÍ PAMĚTI: Zabráníme pádu při vykreslování grafů (IndexError)
+        self.sim_weights = None
+        self.sim_metrics = None
+        self.tuner_data_loaded = False
+        
+        # Uložení stavu zaškrtávacích políček (fixace vah) před překreslením UI
+        if hasattr(self, 'tuner_vars'):
+            self._saved_tuner_vars = {t: var.get() for t, var in self.tuner_vars.items()}
+        
+        # Restart záložky Tuningu na stejném místě v Noteboku
+        try:
+            current_index = self.notebook.index(self.tuner_frame)
+        except:
+            current_index = None
+            
+        self.notebook.forget(self.tuner_frame)
+        
+        try:
+            self.setup_tuner_tab(index=current_index)
+        except TypeError:
+            self.setup_tuner_tab()
+            
+        self.notebook.select(self.tuner_frame)
+        
+        # 3. ROZHODNUTÍ: Načíst bleskově z Cache, nebo simulovat?
+        if new_name in self._preset_cache:
+            # Okamžitá obnova z mezipaměti
+            cache = self._preset_cache[new_name]
+            for key, value in cache.items():
+                setattr(self, key, value)
+                
+            self.tuner_data_loaded = True
+            
+            # Bezpečné překreslení UI bez zdržování
+            mins = np.min(self.sim_metrics, axis=0)
+            maxs = np.max(self.sim_metrics, axis=0)
+            self.root.after(100, lambda: self._setup_sliders_after_load(mins, maxs, self.current_sim_idx))
+        else:
+            # Čistý výpočet (Portfolio ještě v paměti nebylo)
+            self.sim_weights = None
+            self.sim_metrics = None
+            self.tuner_data_loaded = False
+            self.root.after(500, lambda: self.run_tuner_with_loading(
+                lambda: self.initialize_tuner_data(force_download=False), 
+                "Přepínám portfolio a simuluji..."
+            ))
+        
+        # --- VYČIŠTĚNÍ NÁKUPNÍ KARTY ---
+        # 1. Překreslení checkboxů podle nového portfolia
+        if hasattr(self, '_build_buy_checkboxes'):
+            self._build_buy_checkboxes()
+            
+        # 2. Vymazání případného starého nákupního návrhu z předchozí předvolby
+        if hasattr(self, 'buy_tree'):
+            for item in self.buy_tree.get_children():
+                self.buy_tree.delete(item)
+
+
+    def _delete_current_preset(self):
+        """Vymaže aktuální předvolbu (pokud není poslední) a přepne na první dostupnou."""
+        if len(self.presets) <= 1: return
+        
+        old_name = self.current_preset_name
+        
+        if messagebox.askyesno("Smazat předvolbu", f"Opravdu chcete nenávratně smazat předvolbu '{old_name}'?"):
+            # 1. Odstraníme ze slovníku
+            del self.presets[old_name]
+            
+            # 2. Vymažeme z mezipaměti grafů, pokud tam ještě visela
+            if hasattr(self, '_preset_cache') and old_name in self._preset_cache:
+                del self._preset_cache[old_name]
+            
+            # 3. Záměrně "vyprázdníme" aktuální jméno, aby _on_preset_switched nezastavil proces
+            self.current_preset_name = ""
+            
+            # 4. Nastavíme Combobox na první zbývající předvolbu
+            new_preset = list(self.presets.keys())[0]
+            self.preset_combo.set(new_preset)
+            
+            # 5. Zavoláme standardní proces přepnutí (ten se postará i o nové hodnoty v Dropdownu a UI)
+            self._on_preset_switched(None)
 
     def _validate_and_get_limits(self):
         """Načte, zkontroluje a případně opraví uživatelské limity z UI před výpočtem."""
@@ -4745,8 +4975,13 @@ class CzechInvestorApp:
     def on_checkbox_toggle(self):
         if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
         if not getattr(self, 'tuner_data_loaded', False): return 
-        for s in self.sliders.values(): s.config(state="disabled")
-        self.run_tuner_with_loading(lambda: self.initialize_tuner_data(force_download=False), "Přepočítávám simulace...")
+        
+        # Pouze si označíme, že došlo ke změně, ale nepočítáme hned
+        self._pending_simulation = True
+        
+        # Upozorníme uživatele textem nad slidery
+        if hasattr(self, 'tuner_status'):
+            self.tuner_status.config(text="Změněno fixování. Pohněte libovolným sliderem nebo klikněte na tlačítko pro spuštění přepočtu...", fg="#E65100")
 
     def _evaluate_dividend_safety(self, sector, raw_yield, payout):
         """Centrální metoda pro posouzení bezpečnosti dividendy a detekci anomálií."""
@@ -4786,6 +5021,8 @@ class CzechInvestorApp:
         return raw_yield, payout, limit
         
     def initialize_tuner_data(self, force_download=True, n_sims=None, auto_improve=False):
+        self._pending_simulation = False  # Zrušení flagu čekající simulace
+        
         if n_sims is None:
             n_sims = MC_NO
             
@@ -4804,7 +5041,8 @@ class CzechInvestorApp:
             tickers = list(TARGETS.keys())
             
             # Stahování a příprava historických metrik ---
-            if force_download or not getattr(self, 'tuner_data_loaded', False):
+            # Musíme ověřit i to, zda existují matice (protože preloader na pozadí je nestahuje)
+            if force_download or not getattr(self, 'tuner_data_loaded', False) or not hasattr(self, 'tuner_period_returns'):
                 self.root.after(0, lambda: self.tuner_loading_state["label"].config(text="Stahuji data, prosím, čekejte..."))
                 
                 fx = self.get_fx_rates() # Zkusí stáhnout, při chybě tiše použije fallback
@@ -4822,9 +5060,34 @@ class CzechInvestorApp:
                 
                 full_raw_data = downloaded['Close'].replace(0.0, np.nan)
                 
-                data = full_raw_data[tickers].ffill().bfill()
-                if "SPY" in full_raw_data.columns: self.tuner_spy_prices = full_raw_data["SPY"].ffill().bfill()
-                else: self.tuner_spy_prices = pd.Series()
+                                # Ochrana proti pádu "Series object has no attribute columns"
+                if isinstance(full_raw_data, pd.Series):
+                    # Yahoo vrací Series, u které je skutečný název staženého tickeru uložen v atributu 'name'
+                    actual_name = full_raw_data.name if hasattr(full_raw_data, 'name') and full_raw_data.name else all_to_download[0]
+                    full_raw_data = full_raw_data.to_frame(name=actual_name)
+                
+                # Ochrana proti zcela prázdnému portfoliu
+                if not tickers:
+                    self.root.after(0, lambda: messagebox.showwarning("Prázdné portfolio", "V této předvolbě nejsou žádné akcie. Přidejte je přes tlačítko 'Změnit akcie'."))
+                    self.root.after(0, lambda: self.hide_loading(self.tuner_loading_state))
+                    return
+                
+                # Vyfiltrujeme pouze ty tickery, které se skutečně podařilo stáhnout
+                valid_tickers = [t for t in tickers if t in full_raw_data.columns]
+                
+                # Ochrana proti kompletnímu selhání stahování
+                if not valid_tickers:
+                    missing_str = ", ".join(tickers[:5]) + ("..." if len(tickers) > 5 else "")
+                    self.root.after(0, lambda msg=missing_str: messagebox.showerror("Chyba stahování", f"Yahoo Finance neposkytlo historická data pro akcie:\n{msg}\n\nZkontrolujte připojení k internetu, nebo zkuste akci opakovat."))
+                    self.root.after(0, lambda: self.hide_loading(self.tuner_loading_state))
+                    return
+                    
+                data = full_raw_data[valid_tickers].ffill().bfill()
+                
+                if "SPY" in full_raw_data.columns: 
+                    self.tuner_spy_prices = full_raw_data["SPY"].ffill().bfill()
+                else: 
+                    self.tuner_spy_prices = pd.Series(dtype=float)
 
                 monthly_resampled = data.resample('ME').last()
                 monthly_returns = monthly_resampled.pct_change().dropna()
@@ -5065,10 +5328,9 @@ class CzechInvestorApp:
                 self.custom_min_w = m_min
                 self.custom_max_w = m_max
                 
-                # Zaokrouhlení na max 2 desetinná místa, aby nevznikaly texty jako 3.33333
-                # Formát 'g' se postará o oříznutí přebytečných nul a nahradíme tečku čárkou
-                str_min = f"{round(m_min * 100, 2):g}".replace('.', ',')
-                str_max = f"{round(m_max * 100, 2):g}".replace('.', ',')
+                # Pevné zaokrouhlení na 2 desetinná místa
+                str_min = f"{m_min * 100:.2f}".replace('.', ',')
+                str_max = f"{m_max * 100:.2f}".replace('.', ',')
                 
                 if hasattr(self, 'lbl_tuner_title'):
                     self.lbl_tuner_title.config(text=f"Optimalizace ({str_min}-{str_max}%)")
@@ -5078,7 +5340,7 @@ class CzechInvestorApp:
                 if hasattr(self, 'entry_max_w'):
                     self.entry_max_w.delete(0, tk.END)
                     self.entry_max_w.insert(0, str_max)
-                    
+
             # Bezpečné zavolání úpravy UI na hlavním vlákně
             self.root.after(0, lambda: _update_ui_limits(adj_min_w, adj_max_w))
 
@@ -5189,6 +5451,13 @@ class CzechInvestorApp:
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda msg=err_msg: messagebox.showerror("Chyba", msg))
+        finally:
+            # Garantované uvolnění bezpečnostního zámku po dokončení simulace
+            if hasattr(self, '_preload_thread_lock'):
+                with self._preload_thread_lock:
+                    self.tuner_preloading = False
+            else:
+                self.tuner_preloading = False
 
     def _setup_sliders_after_load(self, mins, maxs, best_idx):
         keys =['div', 'dd', 'growth', 'fdiv', 'fdd', 'fgrowth']
@@ -5198,8 +5467,30 @@ class CzechInvestorApp:
         self.update_sliders_visuals(from_user_interaction=False)
         self.tuner_status.config(text="Upravte slidery k nalezení ideálních vah.", fg="green")
 
+    def _on_slider_click(self, event):
+        """Detekuje fyzické kliknutí na slider (i když je disable/zašedlý) a provede čekající přepočet."""
+        if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
+        
+        # Pokud čekáme na přepočet kvůli změně v checkboxech
+        if getattr(self, '_pending_simulation', False):
+            self._pending_simulation = False
+            if getattr(self, '_slider_job', None): 
+                self.root.after_cancel(self._slider_job)
+                self._slider_job = None
+            self.run_tuner_with_loading(lambda: self.initialize_tuner_data(force_download=False), "Aplikuji nové fixace a simuluji...")
+            
     def on_slider_change(self, source_key, value):
         if getattr(self, 'tuner_loading_state', {}).get("is_loading"): return
+        
+        # Pokud čekáme na přepočet kvůli změně v checkboxech
+        if getattr(self, '_pending_simulation', False):
+            self._pending_simulation = False
+            if self._slider_job: 
+                self.root.after_cancel(self._slider_job)
+                self._slider_job = None
+            self.run_tuner_with_loading(lambda: self.initialize_tuner_data(force_download=False), "Aplikuji nové fixace a simuluji...")
+            return
+
         if self.updating_sliders or self.sim_metrics is None: return
         if self._slider_job: self.root.after_cancel(self._slider_job)
         self._slider_job = self.root.after(100, lambda: self._perform_tuning_calculation(source_key, value))
@@ -5316,7 +5607,8 @@ class CzechInvestorApp:
                 
             total_div_yield += w * stock_yield
             
-            if w > max_single_weight:
+            # ETF jsou vnitřně diverzifikovaná, nebereme je jako riziko jedné firmy (stock-picking)
+            if sector != "ETF" and w > max_single_weight:
                 max_single_weight = w
                 max_single_ticker = t
                 
@@ -5423,19 +5715,24 @@ class CzechInvestorApp:
             sec_tt = "Máte pouze ETF. Tato jsou vnitřně sektorově diverzifikována."
             
         # D) Riziko koncentrace do jedné firmy (Stock-picking)
-        single_str = f"{max_single_weight*100:.1f} %".replace('.', ',')
-        if max_single_weight <= LIMITS["MAX_SINGLE_WEIGHT"] * 0.7: sing_col = "#2E7D32"
-        elif max_single_weight <= LIMITS["MAX_SINGLE_WEIGHT"]: sing_col = "#F57F17"
-        else: sing_col = "#C62828"; single_str += " ⚠️"
-        
-        sing_w_str = f"{max_single_weight*100:.1f}".replace('.', ',')
-        sing_drop_str = f"{(50 * max_single_weight):.1f}".replace('.', ',')
-        
-        single_tt = (f"Největší pozice ({max_single_ticker}) tvoří {sing_w_str} % majetku.\n\n"
-                     f"I ty nejlepší firmy mohou zkrachovat nebo ztratit 50 % hodnoty\n"
-                     f"kvůli nečekanému účetnímu skandálu či ztrátě trhu.\n"
-                     f"Při takovém scénáři by vaše celkové portfolio ztratilo {sing_drop_str} %.\n\n"
-                     f"Diverzifikace vás před tímto 'Stock-picking' rizikem chrání.")
+        if max_single_weight > 0:
+            single_str = f"{max_single_weight*100:.1f} %".replace('.', ',')
+            if max_single_weight <= LIMITS["MAX_SINGLE_WEIGHT"] * 0.7: sing_col = "#2E7D32"
+            elif max_single_weight <= LIMITS["MAX_SINGLE_WEIGHT"]: sing_col = "#F57F17"
+            else: sing_col = "#C62828"; single_str += " ⚠️"
+            
+            sing_w_str = f"{max_single_weight*100:.1f}".replace('.', ',')
+            sing_drop_str = f"{(50 * max_single_weight):.1f}".replace('.', ',')
+            
+            single_tt = (f"Největší individuální pozice ({max_single_ticker}) tvoří {sing_w_str} % majetku.\n\n"
+                         f"I ty nejlepší firmy mohou zkrachovat nebo ztratit 50 % hodnoty\n"
+                         f"kvůli nečekanému účetnímu skandálu či ztrátě trhu.\n"
+                         f"Při takovém scénáři by vaše celkové portfolio ztratilo {sing_drop_str} %.\n\n"
+                         f"Diverzifikace vás před tímto 'Stock-picking' rizikem chrání.")
+        else:
+            # Ošetření případu, kdy má investor 100 % portfolia pouze v ETF
+            single_str, sing_col = "0,0 % (Pouze ETF)", "#2E7D32"
+            single_tt = "V portfoliu nejsou žádné individuální akcie, pouze vnitřně diverzifikovaná ETF.\nRiziko selhání (krachu) jedné firmy se vás netýká."
 
         # 3. Uložení dat do paměti a spuštění překreslení (Trojice: Text, Barva, Tooltip)
         risk_data = {
@@ -5742,31 +6039,47 @@ class CzechInvestorApp:
         self.ax_curve.fill_between(future_dates, lower_2sig, upper_2sig, color='#FFF59D', alpha=0.4, label='95% Trychtýř nejistoty')
         
         # ---------------------------------------------------------------------
-        # FIXACE MĚŘÍTKA Y-OSY (Pro snadné porovnávání všech 4 scénářů)
+        # NORMALIZOVANÁ FIXACE MĚŘÍTKA Y-OSY (PŘES VŠECHNY ULOŽENÉ PŘEDVOLBY)
         # ---------------------------------------------------------------------
-        # 1. Extrakce extrémů z historických křivek
-        c_min = min(curve_base.min(), curve_base_decayed.min(), curve_new.min(), curve_new_decayed.min())
-        c_max = max(curve_base.max(), curve_base_decayed.max(), curve_new.max(), curve_new_decayed.max())
+        global_c_min = float('inf')
+        global_c_max = -float('inf')
+
+        # 1. Zohlednění lokálních křivek, aby se graf nikdy neořízl u divokých Monte Carlo experimentů
+        c_min_local = min(curve_base.min(), curve_base_decayed.min(), curve_new.min(), curve_new_decayed.min())
+        c_max_local = max(curve_base.max(), curve_base_decayed.max(), curve_new.max(), curve_new_decayed.max())
         
-        # 2. Zohlednění S&P 500, pokud je vykreslen
         if 'curve_spy' in locals() and 'spy_path' in locals():
-            c_min = min(c_min, curve_spy.min(), spy_path.min())
-            c_max = max(c_max, curve_spy.max(), spy_path.max())
-            
-        # 3. Zohlednění budoucích trychtýřů všech 4 scénářů
-        for w in [base_w, decayed_base_w, new_weights, decayed_new_w]:
-            drift = np.dot(w, self.tuner_upsides) / 252.0
-            vol = np.sqrt(np.dot(w.T, np.dot(self.tuner_cov_matrix.values, w))) / np.sqrt(252)
-            l_val = ((1 + daily_pct_changes.dot(w)).cumprod() * 100000).iloc[-1]
-            
-            f_low = l_val * np.exp((drift - 0.5 * vol**2) * 252 - 2 * vol * np.sqrt(252))
-            f_high = l_val * np.exp((drift - 0.5 * vol**2) * 252 + 2 * vol * np.sqrt(252))
-            c_min = min(c_min, f_low)
-            c_max = max(c_max, f_high)
-            
-        # Aplikace limitů (s 5% vizuálním polštářem nahoře i dole)
-        margin = (c_max - c_min) * 0.05
-        self.ax_curve.set_ylim(c_min - margin, c_max + margin)
+            c_min_local = min(c_min_local, curve_spy.min(), spy_path.min())
+            c_max_local = max(c_max_local, curve_spy.max(), spy_path.max())
+
+        global_c_min = min(global_c_min, c_min_local)
+        global_c_max = max(global_c_max, c_max_local)
+
+        # 2. Globální iterace přes VŠECHNY předvolby (Pro vizuální srovnatelnost při přepínání v Dropdownu)
+        if hasattr(self, 'presets') and hasattr(self, 'tuner_hist_prices'):
+            for preset_name, preset_data in self.presets.items():
+                p_targets = preset_data.get("targets", {})
+                w_arr = np.array([p_targets.get(t, 0.0) for t in self.ordered_tickers])
+                if np.sum(w_arr) > 0: w_arr = w_arr / np.sum(w_arr)
+
+                # Rychlý dot product pro každou předvolbu k získání jejích historických extrémů
+                c_curve = (1 + daily_pct_changes.dot(w_arr)).cumprod() * 100000
+                global_c_min = min(global_c_min, c_curve.min())
+                global_c_max = max(global_c_max, c_curve.max())
+
+                # Zahrnutí budoucího trychtýře (Funnel) pro každou předvolbu
+                drift = np.dot(w_arr, self.tuner_upsides) / 252.0
+                vol = np.sqrt(np.dot(w_arr.T, np.dot(self.tuner_cov_matrix.values, w_arr))) / np.sqrt(252)
+                l_val = c_curve.iloc[-1]
+                
+                f_low = l_val * np.exp((drift - 0.5 * vol**2) * 252 - 2 * vol * np.sqrt(252))
+                f_high = l_val * np.exp((drift - 0.5 * vol**2) * 252 + 2 * vol * np.sqrt(252))
+                global_c_min = min(global_c_min, f_low)
+                global_c_max = max(global_c_max, f_high)
+
+        # Aplikace normalizovaných limitů (s 5% vizuálním polštářem)
+        margin = (global_c_max - global_c_min) * 0.05
+        self.ax_curve.set_ylim(global_c_min - margin, global_c_max + margin)
 
         self.ax_curve.set_title(f"Simulace 100k Kč {pie_title_suffix}")
         self.ax_curve.grid(True, linestyle='--', alpha=0.5)
@@ -5800,23 +6113,34 @@ class CzechInvestorApp:
             self.ax_bars.bar(x + width/2, bars_main, width, label='Nové', color='#4CAF50')
         
         # ---------------------------------------------------------------------
-        # FIXACE MĚŘÍTKA Y-OSY PRO SLOUPCOVÝ GRAF
+        # NORMALIZOVANÁ FIXACE MĚŘÍTKA Y-OSY PRO SLOUPCOVÝ GRAF
         # ---------------------------------------------------------------------
-        global_bars = []
-        for c in [curve_base, curve_base_decayed, curve_new, curve_new_decayed]:
-            for y in years:
-                sc = c[c.index.year == y]
-                if len(sc) > 0:
-                    global_bars.append(sc.iloc[-1] - sc.iloc[0])
-                    
-        if global_bars:
-            gb_min, gb_max = min(global_bars), max(global_bars)
-            if gb_min > 0: gb_min = 0  # Pokud jsme vždy v plusu, ať graf začíná přirozeně od 0
-            if gb_max < 0: gb_max = 0  # Pro případ globální ztráty (graf visící dolů)
+        global_gb_min = float('inf')
+        global_gb_max = -float('inf')
+
+        # Projdeme všechny předvolby a najdeme nejvyšší a nejnižší sloupec za celou 5letou historii
+        if hasattr(self, 'presets') and hasattr(self, 'tuner_hist_prices'):
+            for preset_name, preset_data in self.presets.items():
+                p_targets = preset_data.get("targets", {})
+                w_arr = np.array([p_targets.get(t, 0.0) for t in self.ordered_tickers])
+                if np.sum(w_arr) > 0: w_arr = w_arr / np.sum(w_arr)
+
+                c_curve = (1 + daily_pct_changes.dot(w_arr)).cumprod() * 100000
+                
+                for y in years:
+                    sc = c_curve[c_curve.index.year == y]
+                    if len(sc) > 0:
+                        bar_val = sc.iloc[-1] - sc.iloc[0]
+                        global_gb_min = min(global_gb_min, bar_val)
+                        global_gb_max = max(global_gb_max, bar_val)
+                        
+        if global_gb_min != float('inf') and global_gb_max != -float('inf'):
+            if global_gb_min > 0: global_gb_min = 0  # Přirozený začátek od 0
+            if global_gb_max < 0: global_gb_max = 0  
             
-            # Aplikace limitů (s 15% vizuálním polštářem)
-            pad = (gb_max - gb_min) * 0.15
-            self.ax_bars.set_ylim(gb_min - pad, gb_max + pad)
+            # Aplikace normalizovaných limitů (s 15% vizuálním polštářem)
+            pad = (global_gb_max - global_gb_min) * 0.15
+            self.ax_bars.set_ylim(global_gb_min - pad, global_gb_max + pad)
 
         self.ax_bars.set_xticks(x); self.ax_bars.set_xticklabels(lbls)
         self.ax_bars.set_title("Roční zisk [Kč]")
@@ -7173,15 +7497,34 @@ class CzechInvestorApp:
         self.health_msg = tk.Label(right_frame, text="", fg="grey", wraplength=350, justify="center", font=("Arial", 12))
         self.health_msg.pack(pady=10)
 
-        # SPODNÍ LIŠTA
+        # SPODNÍ LIŠTA - TLAČÍTKA A NÁZEV PŘEDVOLBY
         btn_frame = tk.Frame(editor)
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=15, padx=20)
-        tk.Button(btn_frame, text="💾 Uložit změny a Zavřít", bg="#2E7D32", fg="white", font=("Arial", 12, "bold"), 
-                  command=lambda: self._save_portfolio_changes(editor, list_current, filter_vars), height=2).pack(fill=tk.X)
+        
+        # Automatické předvyplnění názvu aktuální předvolby
+        self.preset_name_var = tk.StringVar(value=getattr(self, 'current_preset_name', ''))
+        
+        input_frame = tk.Frame(btn_frame)
+        input_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+        
+        tk.Label(input_frame, text="Název předvolby:", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=(0, 5))
+        tk.Entry(input_frame, textvariable=self.preset_name_var, font=("Arial", 12), width=25).pack(side=tk.LEFT, padx=5)
+        tk.Label(input_frame, text="(pokud nevyplníte, vygeneruje se automaticky)", font=("Arial", 10), fg="grey").pack(side=tk.LEFT)
+        
+        action_frame = tk.Frame(btn_frame)
+        action_frame.pack(side=tk.TOP, fill=tk.X)
+        
+        # Tlačítko 1: Uložit stávající / Přejmenovat
+        tk.Button(action_frame, text="💾 Uložit úpravy a Zavřít", bg="#2E7D32", fg="white", font=("Arial", 12, "bold"), 
+                  command=lambda: self._save_portfolio_changes(editor, list_current, filter_vars, is_new=False), height=2).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+                  
+        # Tlačítko 2: Vytvořit jako úplně novou předvolbu
+        tk.Button(action_frame, text="➕ Uložit jako NOVOU a Zavřít", bg="#0288D1", fg="white", font=("Arial", 12, "bold"), 
+                  command=lambda: self._save_portfolio_changes(editor, list_current, filter_vars, is_new=True), height=2).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
                   
         list_available.bind("<Double-1>", lambda e: self._edit_stock_tags(list_available, list_available, list_current, filter_vars))
         list_current.bind("<Double-1>", lambda e: self._edit_stock_tags(list_current, list_available, list_current, filter_vars))
-
+        
         self._refresh_lists(list_available, list_current, filter_vars)
 
     def _on_editor_sort_change(self, list_avail, list_curr, filter_vars):
@@ -7581,53 +7924,115 @@ class CzechInvestorApp:
         self.health_lbl.config(text=f"Zdraví složení: {score}% ({txt})", fg=color)
         self.health_msg.config(text="\n".join(warnings) if warnings else "Portfolio je vzorně vyvážené.")
 
-    def _save_portfolio_changes(self, window, l_curr, f_vars):
-        """Propíše dočasné změny z editoru do ostrého nastavení a uloží do JSONu."""
+    def _save_portfolio_changes(self, window, l_curr, f_vars, is_new=False):
+        """Propíše dočasné změny z editoru do ostrého nastavení, uloží pod správným názvem do JSONu."""
         global TARGETS, CURRENCIES
         
-        # 1. Zjištění aktuální pozice záložky v Notebooku, aby se po refreshi nepřehodilo pořadí
+        # Zjištění aktuální pozice záložky v Notebooku, aby se po refreshi nepřehodilo pořadí
         try:
             current_index = self.notebook.index(self.tuner_frame)
         except:
             current_index = None # Fallback pro jistotu
             
-        # 2. Propis dat do paměti aplikace
+        old_preset_name = getattr(self, 'current_preset_name', None)
+        preset_name = self.preset_name_var.get().strip()
+            
+        if is_new:
+            # Chceme VYTVOŘIT NOVOU předvolbu
+            # Pokud uživatel nevyplnil název nebo nechal původní, automaticky mu přidáme číslování
+            if not preset_name or preset_name == old_preset_name:
+                base_name = preset_name if preset_name else "Portfolio"
+                idx = 1
+                while f"{base_name} {idx}" in self.presets:
+                    idx += 1
+                preset_name = f"{base_name} {idx}"
+            else:
+                # Pokud zadal nový název ručně, ověříme, že náhodou už stejný neexistuje
+                original_name = preset_name
+                idx = 1
+                while preset_name in self.presets:
+                    preset_name = f"{original_name} {idx}"
+                    idx += 1
+        else:
+            # Chceme ULOŽIT ZMĚNY STÁVAJÍCÍ PŘEDVOLBY (příp. ji jen přejmenovat)
+            if not preset_name:
+                idx = 1
+                while f"Portfolio {idx}" in self.presets:
+                    idx += 1
+                preset_name = f"Portfolio {idx}"
+                
+            # Pokud ji přejmenováváme, smažeme tu původní, aby nám nezůstal duplikát
+            if old_preset_name and old_preset_name != preset_name:
+                if old_preset_name in self.presets:
+                    del self.presets[old_preset_name]
+
+        self.current_preset_name = preset_name
+            
+        # Zápis do předvoleb
+        self.presets[self.current_preset_name] = {
+            "targets": self.temp_targets.copy(),
+            "ethical_filters": {k: v.get() for k, v in f_vars.items()}
+        }
+
+        # Propis dat do paměti aplikace
         TARGETS.clear()
         TARGETS.update(self.temp_targets)
+        self.ethical_filters = self.presets[self.current_preset_name]["ethical_filters"]
         
         # Okamžitá registrace měn nově přidaných akcií do globální paměti
         for t, meta in self.stock_db.items():
             if t in TARGETS and "currency" in meta:
                 CURRENCIES[t] = meta["currency"]
 
-        self.ethical_filters = {k: v.get() for k, v in f_vars.items()}
-        
-        # Inteligentní úprava vah při změně počtu titulů
         cnt = len(TARGETS)
         if cnt > 0:
             current_sum = sum(TARGETS.values())
+            # Najdeme všechny nově přidané akcie (jejich výchozí váha je 0)
+            new_stocks = [t for t, w in TARGETS.items() if w <= 0.0001]
             
             if current_sum <= 0:
                 # Ochrana: Všechny váhy jsou nula (např. zcela prázdné portfolio)
                 new_w = 1.0 / cnt
                 for t in TARGETS: TARGETS[t] = new_w
-            elif abs(current_sum - 1.0) > 0.001:
-                # Pokud byla akcie odebrána, součet klesne pod 1.0.
-                # Abychom base portfolio nerozbili, pouze poměrově zvětšíme 
-                # zbývající akcie tak, aby opět tvořily 100 %, ale zachovaly si vzájemné poměry.
-                for t in TARGETS: TARGETS[t] = TARGETS[t] / current_sum
-                
-            # POZNÁMKA: Pokud byla akcie PŘIDÁNA, má zatím váhu 0.0 a current_sum je stále 1.0.
-            # V takovém případě kód neudělá NIC. Base portfolio zůstane nedotčené (staré) 
-            # a nová akcie čeká na 0 %, dokud jí Tuner nepřidělí novou váhu!
-        
+            elif current_sum < 0.999:
+                # Váha se uvolnila (uživatel smazal nějaké staré akcie)
+                if new_stocks:
+                    # Pokud přidal nové akcie, neroztahujeme staré, ale dáme uvolněný kapitál rovnou těm novým
+                    missing = 1.0 - current_sum
+                    share = missing / len(new_stocks)
+                    for t in new_stocks:
+                        TARGETS[t] = share
+                else:
+                    # Pokud jen mazal a nic nového nepřidal, musíme zbytek roztáhnout na 100 %
+                    for t in TARGETS: 
+                        TARGETS[t] = TARGETS[t] / current_sum
+            elif current_sum > 1.001:
+                # Pojistka, kdyby součet nechtěně přetekl 100 % (srazíme to dolů)
+                for t in TARGETS: 
+                    TARGETS[t] = TARGETS[t] / current_sum
+            # POZNÁMKA: Pokud byla akcie přidána a žádná nebyla odebrána, má zatím váhu 0.0 a current_sum je stále 1.0.
+            # V takovém případě kód neudělá nic. Base portfolio zůstane nedotčené (staré) 
+            # a nová akcie čeká na 0 %, dokud jí Tuner nepřidělí novou váhu.
+                    
+        # Smazání paměti upravené předvolby, aby ji aplikace musela přesimulovat s novými akciemi
+        if hasattr(self, '_preset_cache') and self.current_preset_name in self._preset_cache:
+            del self._preset_cache[self.current_preset_name]
+
         self.stock_db_from_json = self.stock_db
         self.save_data()
         
+        # VYČIŠTĚNÍ PAMĚTI: Zabráníme pádu při vykreslování grafů (IndexError)
+        self.sim_weights = None
+        self.sim_metrics = None
         self.tuner_data_loaded = False
+        
+        # Uložení stavu zaškrtávacích políček (fixace vah) před překreslením UI
+        if hasattr(self, 'tuner_vars'):
+            self._saved_tuner_vars = {t: var.get() for t, var in self.tuner_vars.items()}
+        
         window.destroy()
         
-        # 3. Reset a znovunačtení záložky Tuning na původním indexu
+        # Reset a znovunačtení záložky Tuning
         self.notebook.forget(self.tuner_frame)
         
         # Ošetření pro metodu setup_tuner_tab, pokud by nepodporovala index
@@ -7639,7 +8044,7 @@ class CzechInvestorApp:
         self.notebook.select(self.tuner_frame)
         
         # AUTOMATICKÉ SPUŠTĚNÍ SIMULACE
-        # Počkáme 200 ms na překreslení UI a pak automaticky zavoláme stejnou funkci,
+        # Počkáme 500 ms na překreslení UI a pak automaticky zavoláme stejnou funkci,
         # kterou jinak volá oranžové tlačítko "NAČÍST DATA & SIMULOVAT".
         self.root.after(500, lambda: self.run_tuner_with_loading(
             lambda: self.initialize_tuner_data(force_download=True), 
