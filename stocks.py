@@ -7717,10 +7717,27 @@ class CzechInvestorApp:
 
         try:
             hist = found_stock_obj.history(period="2y")
-            if len(hist) > 1:
-                growth_2y = ((hist['Close'].iloc[-1] / hist['Close'].iloc[0]) - 1.0) * 100
+            
+            # yfinance může občas vrátit NaN (Not a Number) na začátku 
+            # nebo na konci období (svátky, dny s nulovou likviditou atd.).
+            if not hist.empty and 'Close' in hist.columns:
+                # Extrahujeme pouze sloupec 'Close' a zahodíme všechny prázdné hodnoty
+                valid_close = hist['Close'].dropna()
+                
+                # Zkontrolujeme, že nám zbyly alespoň 2 platné dny pro výpočet
+                if len(valid_close) > 1:
+                    first_price = float(valid_close.iloc[0])
+                    last_price = float(valid_close.iloc[-1])
+                    
+                    # Výpočet růstu s bezpečnostní pojistkou proti dělení nulou
+                    if first_price > 0:
+                        growth_2y = ((last_price / first_price) - 1.0) * 100
+                    else:
+                        growth_2y = 0.0
+                else:
+                    growth_2y = 0.0
             else:
-                growth_2y = 0
+                growth_2y = 0.0
             
             # Pokud je ETF akumulační, natvrdo anulujeme dividendu
             if is_etf and etf_type == "Acc":
