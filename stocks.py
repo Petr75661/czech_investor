@@ -6044,10 +6044,33 @@ class CzechInvestorApp:
         global_c_min = float('inf')
         global_c_max = -float('inf')
 
-        # 1. Zohlednění lokálních křivek, aby se graf nikdy neořízl u divokých Monte Carlo experimentů
-        c_min_local = min(curve_base.min(), curve_base_decayed.min(), curve_new.min(), curve_new_decayed.min())
-        c_max_local = max(curve_base.max(), curve_base_decayed.max(), curve_new.max(), curve_new_decayed.max())
+        # 1. Extrémy lokálního Monte Carla (všechny 4 varianty naráz, aby přepínání neměnilo osu)
+        c_min_local = float('inf')
+        c_max_local = -float('inf')
         
+        for w_arr, c_curve in [(base_w, curve_base), (decayed_base_w, curve_base_decayed), 
+                               (new_weights, curve_new), (decayed_new_w, curve_new_decayed)]:
+            
+            # A) Hrubá křivka
+            c_min_local = min(c_min_local, c_curve.min())
+            c_max_local = max(c_max_local, c_curve.max())
+            
+            # B) Zdaněná křivka
+            div_y = np.dot(w_arr, self.tuner_stock_divs)
+            c_net_arr = (1 + daily_pct_changes.dot(w_arr) - (div_y * DEFAULT_TAX_RATE / 252.0)).cumprod() * 100000
+            c_min_local = min(c_min_local, c_net_arr.min())
+            c_max_local = max(c_max_local, c_net_arr.max())
+            
+            # C) Trychtýř (Funnel) do budoucnosti
+            drift = np.dot(w_arr, self.tuner_upsides) / 252.0
+            vol = np.sqrt(np.dot(w_arr.T, np.dot(self.tuner_cov_matrix.values, w_arr))) / np.sqrt(252)
+            l_val = c_curve.iloc[-1]
+            f_low = l_val * np.exp((drift - 0.5 * vol**2) * 252 - 2 * vol * np.sqrt(252))
+            f_high = l_val * np.exp((drift - 0.5 * vol**2) * 252 + 2 * vol * np.sqrt(252))
+            
+            c_min_local = min(c_min_local, f_low)
+            c_max_local = max(c_max_local, f_high)
+
         if 'curve_spy' in locals() and 'spy_path' in locals():
             c_min_local = min(c_min_local, curve_spy.min(), spy_path.min())
             c_max_local = max(c_max_local, curve_spy.max(), spy_path.max())
@@ -6118,7 +6141,16 @@ class CzechInvestorApp:
         global_gb_min = float('inf')
         global_gb_max = -float('inf')
 
-        # Projdeme všechny předvolby a najdeme nejvyšší a nejnižší sloupec za celou 5letou historii
+        # 1. Nezávislé vyhodnocení všech 4 lokálních stavů portfolia (aby přepínání neměnilo osu)
+        for c in [curve_base, curve_base_decayed, curve_new, curve_new_decayed]:
+            for y in years:
+                sc = c[c.index.year == y]
+                if len(sc) > 0:
+                    bar_val = sc.iloc[-1] - sc.iloc[0]
+                    global_gb_min = min(global_gb_min, bar_val)
+                    global_gb_max = max(global_gb_max, bar_val)
+
+        # 2. Projdeme všechny uložené předvolby a najdeme nejvyšší a nejnižší sloupec za 5 let
         if hasattr(self, 'presets') and hasattr(self, 'tuner_hist_prices'):
             for preset_name, preset_data in self.presets.items():
                 p_targets = preset_data.get("targets", {})
