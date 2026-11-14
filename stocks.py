@@ -492,6 +492,9 @@ class CzechInvestorApp:
         style.configure('Treeview.Heading', font=bold_font)
         style.configure('TButton', font=bold_font)
         
+        # Zámek pro bezpečný zápis dat a synchronizaci předvoleb mezi vlákny
+        self._save_lock = threading.Lock()
+
         # Načtení dat a aktualizace kurzů
         self.ledger, self.sales_history, self.uniform_rates = self.load_data()
         assert round(sum(TARGETS.values()), 4) == 1.0, f"Součet vah je {sum(TARGETS.values())}, musí být 1.0!"
@@ -572,8 +575,12 @@ class CzechInvestorApp:
                         else:
                             self.presets["Portfolio 1"] = {"targets": TARGETS.copy(), "ethical_filters": saved_filters}
                     
+                    # Pokud uložený název předvolby v seznamu chybí, přepneme bezpečně na první dostupnou
+                    if self.current_preset_name not in self.presets:
+                        self.current_preset_name = next(iter(self.presets.keys()))
+
                     # Načtení aktuální předvolby do globální proměnné TARGETS
-                    active_preset = self.presets.get(self.current_preset_name, list(self.presets.values())[0])
+                    active_preset = self.presets[self.current_preset_name]
                     if active_preset.get("targets"):
                         TARGETS.clear()
                         TARGETS.update({k: float(v) for k, v in active_preset["targets"].items()})
@@ -641,41 +648,96 @@ class CzechInvestorApp:
         self.drifting_targets_enabled = False
         return {t:[] for t in TARGETS},[], {}
 
-    def save_data(self):
-        # Aktualizace aktivní předvolby před uložením
-        if not hasattr(self, 'presets'): self.presets = {}
-        if not hasattr(self, 'current_preset_name'): self.current_preset_name = "Portfolio 1"
-        
-        self.presets[self.current_preset_name] = {
-            "targets": TARGETS.copy(), # Vytvoříme tvrdou nezávislou kopii
-            "ethical_filters": getattr(self, 'ethical_filters', {k: True for k in TAGS})
-        }
+    def get_active_targets(self):
+        """
+        Jediný zdroj pravdy pro cílové váhy portfolia.
+        Vždy načte aktuálně zvolenou předvolbu z rozbalovacího seznamu na kartě Tuning
+        (nebo z current_preset_name), zesynchronizuje globální TARGETS a vrátí čistou kopii vah.
+        Pozn.: Volat vždy z hlavního vlákna UI (kvůli čtení Tkinter widgetu preset_combo).
+        """
+        global TARGETS
+        presets = getattr(self, 'presets', {})
 
-        data = {
-            "presets": self.presets,
-            "current_preset_name": self.current_preset_name,
-            "targets": TARGETS.copy(), # Pro jistotu nezávislá kopie i zde
-            "holdings": self.ledger, 
-            "sales_history": self.sales_history, 
-            "uniform_rates": self.uniform_rates,
-            "stock_db": getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB),
-            "ethical_filters": getattr(self, 'ethical_filters', {k: True for k in TAGS}),
-            "min_w": getattr(self, 'custom_min_w', MIN_W),
-            "max_w": getattr(self, 'custom_max_w', MAX_W),
-            "real_dividends": getattr(self, 'real_dividends',[]),
-            "fee_percent": getattr(self, 'fee_percent', 0.5),
-            "optimize_fees_enabled": getattr(self, 'optimize_fees_enabled', True),
-            "editor_sort_mode": getattr(self, 'editor_sort_mode', 'metrics'),
-            "last_growth_update": getattr(self, 'last_growth_update', None),
-            "drifting_targets_enabled": getattr(self, 'drifting_targets_enabled', False),
-            "dyn_targets_enabled": getattr(self, 'dyn_targets_enabled', False),
-            "dyn_yield_cap": getattr(self, 'dyn_yield_cap', 3.0),
-            "dyn_abs_div": getattr(self, 'dyn_abs_div', 500000),
-            # hodnoty pro okamžitý start bez načítání (použito v tooltipu):
-            "last_portfolio_value_czk": getattr(self, 'last_portfolio_value_czk', 0.0),
-            "last_nominal_yield": getattr(self, 'last_nominal_yield', 0.04)
-        }
-        with open(PORTFOLIO_FILE, "w") as f: json.dump(data, f, indent=4)
+        # 1. Zjistíme název předvolby primárně přímo z UI comboboxu "Aktivní předvolba"
+        selected_name = None
+        if hasattr(self, 'preset_combo') and self.preset_combo.winfo_exists():
+            combo_val = self.preset_combo.get().strip()
+            if combo_val in presets:
+                selected_name = combo_val
+
+        # 2. Záložní volba ze stavu aplikace, případně první existující předvolba
+        if not selected_name:
+            curr = getattr(self, 'current_preset_name', None)
+            if curr in presets:
+                selected_name = curr
+            elif presets:
+                selected_name = next(iter(presets.keys()))
+
+        # 3. Extrakce vah a bezpečná synchronizace globální proměnné TARGETS
+        if selected_name and selected_name in presets:
+            self.current_preset_name = selected_name
+            raw_targets = presets[selected_name].get("targets", {})
+            clean_targets = {k: float(v) for k, v in raw_targets.items()}
+
+            lock = getattr(self, '_save_lock', None)
+            if lock:
+                with lock:
+                    TARGETS.clear()
+                    TARGETS.update(clean_targets)
+            else:
+                TARGETS.clear()
+                TARGETS.update(clean_targets)
+
+            return clean_targets.copy()
+
+        # Nouzový fallback, pokud ještě neexistují žádné předvolby
+        return {k: float(v) for k, v in TARGETS.items()}
+
+    def save_data(self):
+        """Bezpečně uloží kompletní stav aplikace do JSON souboru pod zámkem proti souběhu vláken."""
+        lock = getattr(self, '_save_lock', None)
+        if lock:
+            lock.acquire()
+        try:
+            # Aktualizace aktivní předvolby před uložením
+            if not hasattr(self, 'presets'): self.presets = {}
+            if not hasattr(self, 'current_preset_name'): self.current_preset_name = "Portfolio 1"
+
+            # Zapíšeme do aktivní předvolby jen tehdy, pokud TARGETS nejsou prázdné (ochrana před rozbitím při přepínání)
+            if TARGETS:
+                self.presets[self.current_preset_name] = {
+                    "targets": TARGETS.copy(), # Vytvoříme tvrdou nezávislou kopii
+                    "ethical_filters": getattr(self, 'ethical_filters', {k: True for k in TAGS})
+                }
+
+            data = {
+                "presets": self.presets,
+                "current_preset_name": self.current_preset_name,
+                "targets": TARGETS.copy(), # Pro jistotu nezávislá kopie i zde
+                "holdings": self.ledger, 
+                "sales_history": self.sales_history, 
+                "uniform_rates": self.uniform_rates,
+                "stock_db": getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB),
+                "ethical_filters": getattr(self, 'ethical_filters', {k: True for k in TAGS}),
+                "min_w": getattr(self, 'custom_min_w', MIN_W),
+                "max_w": getattr(self, 'custom_max_w', MAX_W),
+                "real_dividends": getattr(self, 'real_dividends',[]),
+                "fee_percent": getattr(self, 'fee_percent', 0.5),
+                "optimize_fees_enabled": getattr(self, 'optimize_fees_enabled', True),
+                "editor_sort_mode": getattr(self, 'editor_sort_mode', 'metrics'),
+                "last_growth_update": getattr(self, 'last_growth_update', None),
+                "drifting_targets_enabled": getattr(self, 'drifting_targets_enabled', False),
+                "dyn_targets_enabled": getattr(self, 'dyn_targets_enabled', False),
+                "dyn_yield_cap": getattr(self, 'dyn_yield_cap', 3.0),
+                "dyn_abs_div": getattr(self, 'dyn_abs_div', 500000),
+                # hodnoty pro okamžitý start bez načítání (použito v tooltipu):
+                "last_portfolio_value_czk": getattr(self, 'last_portfolio_value_czk', 0.0),
+                "last_nominal_yield": getattr(self, 'last_nominal_yield', 0.04)
+            }
+            with open(PORTFOLIO_FILE, "w") as f: json.dump(data, f, indent=4)
+        finally:
+            if lock:
+                lock.release()
 
     def check_and_update_uniform_rates(self):
         current_year = datetime.now().year
@@ -1612,7 +1674,19 @@ class CzechInvestorApp:
         return dynamic_targets
 
     def start_calculate_buys(self):
-        """Příprava před výpočtem - zamkne tlačítka a vyčistí tabulku v hlavním vlákně."""
+        """Příprava před výpočtem - načte aktivní předvolbu, zamkne tlačítka a vyčistí tabulku v hlavním vlákně."""
+        # 1. Načteme aktuální cílové váhy přímo z aktivní předvolby (bezpečně na hlavním vlákně)
+        active_targets = self.get_active_targets()
+
+        # 2. Pokud se checkboxy na kartě Nákup rozcházejí s aktivní předvolbou, obnovíme je před zamčením
+        expected_tickers = {t for t, w in active_targets.items() if w > 1e-6}
+        current_cb_tickers = set(getattr(self, 'buy_active_vars', {}).keys())
+        if expected_tickers != current_cb_tickers and hasattr(self, '_build_buy_checkboxes'):
+            self._build_buy_checkboxes()
+
+        # 3. Bezpečné načtení hodnot checkboxů do běžného slovníku před spuštěním vlákna na pozadí
+        active_buy_flags = {t: var.get() for t, var in getattr(self, 'buy_active_vars', {}).items()}
+
         self.btn_calc_buys.config(state=tk.DISABLED)
         
         # Zamknutí prvků pro optimalizaci poplatků a posuvu vah
@@ -1628,10 +1702,13 @@ class CzechInvestorApp:
         # Nastavení časovače pro zobrazení animace ozubených kol (pokud to trvá déle než 2 vteřiny)
         self.planner_loading_timer = self.root.after(2000, lambda: self.show_loading(self.planner_loading_state, "Stahuji data, prosím, čekejte..."))
         
-        threading.Thread(target=self.calculate_buys, daemon=True).start()
+        threading.Thread(target=self.calculate_buys, args=(active_targets, active_buy_flags), daemon=True).start()
 
-    def calculate_buys(self):
+    def calculate_buys(self, active_targets=None, active_buy_flags=None):
         try:
+            # Pokud metoda nebyla zavolána přes start_calculate_buys, použijeme kopii aktuálních cílů
+            if active_targets is None:
+                active_targets = {k: float(v) for k, v in TARGETS.items()}
             wait_loops = 0
             # Aplikace čeká na dokončení stahování fundamentů z preloaderu na pozadí (max 180 vteřin, zde v desetinách)
             while not getattr(self, 'tuner_data_loaded', False) and wait_loops < 1800:
@@ -1646,8 +1723,8 @@ class CzechInvestorApp:
 
             fx = self.get_fx_rates()
             
-            # Musíme zjistit tržní cenu celého majetku, nejen akcií v aktuálním TARGETS
-            all_tickers_set = set(TARGETS.keys())
+            # Musíme zjistit tržní cenu celého majetku, nejen akcií v aktuálně vybrané předvolbě
+            all_tickers_set = set(active_targets.keys())
             for t, lots in self.ledger.items():
                 if sum(l['qty'] for l in lots) > 0.001:
                     all_tickers_set.add(t)
@@ -1706,12 +1783,13 @@ class CzechInvestorApp:
             projected_total_val = total_current_portfolio_val + invest
 
             # --- ZÍSKÁNÍ PŘESNÝCH DAT (Společné pro dynamickou brzdu i pro uložení do paměti) ---
-            nom_weights = np.array([TARGETS[t] for t in TARGETS.keys()])
+            target_keys = list(active_targets.keys())
+            nom_weights = np.array([active_targets[t] for t in target_keys])
             yields_list = []
             growths_list = []
             db = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
             
-            for t in TARGETS.keys():
+            for t in target_keys:
                 if getattr(self, 'tuner_data_loaded', False) and hasattr(self, 'ordered_tickers') and t in self.ordered_tickers:
                     idx = self.ordered_tickers.index(t)
                     # Použijeme stejná precizní data jako Tuner
@@ -1728,7 +1806,7 @@ class CzechInvestorApp:
             nom_portfolio_yield = np.sum(nom_weights * yields_array)
 
             # DYNAMICKÉ ŘÍZENÍ DIVIDENDOVÉHO VÝNOSU (EXPONENCIÁLNÍ BRZDA)
-            effective_targets = TARGETS.copy()
+            effective_targets = active_targets.copy()
             if getattr(self, 'dyn_targets_enabled', False) and projected_total_val > 0:
                 try:
                     # 1. Zjištění limitů z UI (čte přímo aktuální text v políčku, i bez stisku Enter)
@@ -1758,7 +1836,7 @@ class CzechInvestorApp:
                     )
                     
                     # Propsání nových upravených vah do dočasného slovníku
-                    for i, t in enumerate(TARGETS.keys()):
+                    for i, t in enumerate(target_keys):
                         effective_targets[t] = float(best_w[i])
                         
                 except Exception as e:
@@ -1773,11 +1851,11 @@ class CzechInvestorApp:
                 )
 
             # VYŘAZENÍ AKCIÍ ODŠKRTNUTÝCH UŽIVATELEM
-            if not hasattr(self, 'buy_active_vars'):
-                self.buy_active_vars = {t: tk.BooleanVar(value=True) for t in TARGETS.keys()}
-                
+            if active_buy_flags is None:
+                active_buy_flags = {t: var.get() for t, var in getattr(self, 'buy_active_vars', {}).items()}
+
             for t in list(effective_targets.keys()):
-                if t in self.buy_active_vars and not self.buy_active_vars[t].get():
+                if not active_buy_flags.get(t, True):
                     effective_targets[t] = 0.0 # Vynulujeme cíl, nedostane z investice nic
                     
             # Důležité: Váhy musíme znovu normalizovat na 100 %, 
@@ -1934,7 +2012,7 @@ class CzechInvestorApp:
                     
                     # Formátování cílové váhy - šipky a původní cíl v závorce ukazujeme pouze při zapnutém posuvu vah
                     if getattr(self, 'drifting_targets_enabled', False):
-                        orig_target = TARGETS.get(t, 0.0)
+                        orig_target = active_targets.get(t, 0.0)
                         if target > orig_target + 0.0001:
                             arrow = " ↑"
                         elif target < orig_target - 0.0001:
@@ -3366,7 +3444,8 @@ class CzechInvestorApp:
         for i in self.sell_staging_tree.get_children(): self.sell_staging_tree.delete(i)
         
         self.sell_loading_timer = self.root.after(1000, lambda: self.show_loading(self.sell_loading_state, "Počítám optimální prodej..."))
-        threading.Thread(target=self.calculate_withdrawal, daemon=True).start()
+        active_targets = self.get_active_targets()
+        threading.Thread(target=self.calculate_withdrawal, args=(active_targets,), daemon=True).start()
 
     def start_calculate_rebalancing(self):
         """Spustí výpočet rebalančních prodejů ve vedlejším vlákně a dočasně zablokuje UI."""
@@ -3378,15 +3457,18 @@ class CzechInvestorApp:
         # Nastavení časovače pro zobrazení loading ozubených kol
         self.sell_loading_timer = self.root.after(1000, lambda: self.show_loading(self.sell_loading_state, "Počítám rebalancování z živých dat..."))
         
-        threading.Thread(target=self.calculate_rebalancing, daemon=True).start()
+        active_targets = self.get_active_targets()
+        threading.Thread(target=self.calculate_rebalancing, args=(active_targets,), daemon=True).start()
 
-    def calculate_rebalancing(self):
+    def calculate_rebalancing(self, active_targets=None):
         """
         Matematické jádro rebalancování. 
         Stáhne živé kurzy a dividendy, zohlední případnou dividendovou brzdu,
         vyhledá všechny nadhodnocené pozice a navrhne jejich prodej.
         """
         try:
+            if active_targets is None:
+                active_targets = {k: float(v) for k, v in TARGETS.items()}
             wait_loops = 0
             # Aplikace čeká na dokončení stahování fundamentů z preloaderu na pozadí (max 180 vteřin, zde v desetinách)
             while not getattr(self, 'tuner_data_loaded', False) and wait_loops < 1800:
@@ -3396,7 +3478,7 @@ class CzechInvestorApp:
             fx = self.get_fx_rates()
             
             # Zahrnutí akcií, které sice nejsou v cílech, ale fyzicky je držíme
-            all_tickers_set = set(TARGETS.keys())
+            all_tickers_set = set(active_targets.keys())
             for t, lots in self.ledger.items():
                 if sum(l['qty'] for l in lots) > 0.001:
                     all_tickers_set.add(t)
@@ -3450,12 +3532,13 @@ class CzechInvestorApp:
                     current_holdings_val[t] = 0.0
 
             # --- ZÍSKÁNÍ PŘESNÝCH DAT (Společné pro dynamickou brzdu) ---
-            nom_weights = np.array([TARGETS[t] for t in TARGETS.keys()])
+            target_keys = list(active_targets.keys())
+            nom_weights = np.array([active_targets[t] for t in target_keys])
             yields_list = []
             growths_list = []
             db = getattr(self, 'stock_db_from_json', DEFAULT_STOCK_DB)
             
-            for t in TARGETS.keys():
+            for t in target_keys:
                 if getattr(self, 'tuner_data_loaded', False) and hasattr(self, 'ordered_tickers') and t in self.ordered_tickers:
                     idx = self.ordered_tickers.index(t)
                     yields_list.append(self.tuner_stock_divs[idx])
@@ -3470,7 +3553,7 @@ class CzechInvestorApp:
             nom_portfolio_yield = np.sum(nom_weights * yields_array)
 
             # 2. Výpočet cílů se zohledněním dividendové brzdy (Glide-Path)
-            effective_targets = TARGETS.copy()
+            effective_targets = active_targets.copy()
             if getattr(self, 'dyn_targets_enabled', False) and total_current_portfolio_val > 0:
                 try:
                     yield_cap = float(self.dyn_floor_slider.get()) / 100.0
@@ -3492,7 +3575,7 @@ class CzechInvestorApp:
                         yield_cap=yield_cap
                     )
                     
-                    for i, t in enumerate(TARGETS.keys()):
+                    for i, t in enumerate(target_keys):
                         effective_targets[t] = float(best_w[i])
                         
                 except Exception as e:
@@ -3516,8 +3599,9 @@ class CzechInvestorApp:
                 ideal_val = total_current_portfolio_val * target
                 curr_val = current_holdings_val.get(t, 0.0)
 
-                # Porovnáme realitu s cílem (zavedeme toleranci 100 Kč kvůli drobným zaokrouhlením)
-                if curr_val > ideal_val + 100.0:
+                # U vyřazených akcií (cíl 0 %) prodáme jakýkoliv zbytek; u aktivních držíme toleranci 100 Kč
+                tolerance = 0.0 if target <= 0.0 else 100.0
+                if curr_val > ideal_val + tolerance:
                     excess_czk = curr_val - ideal_val
                     try:
                         price = prices_dict.get(t, 0.0)
@@ -3592,8 +3676,10 @@ class CzechInvestorApp:
         self.hide_loading(self.sell_loading_state)
         self.btn_calc_rebal.config(state=tk.NORMAL)
 
-    def calculate_withdrawal(self):
+    def calculate_withdrawal(self, active_targets=None):
         try:
+            if active_targets is None:
+                active_targets = {k: float(v) for k, v in TARGETS.items()}
             try:
                 target_cash = float(self.withdraw_entry.get().replace(',', '.'))
             except ValueError:
@@ -3602,7 +3688,7 @@ class CzechInvestorApp:
 
             fx = self.get_fx_rates()
             
-            all_tickers_set = set(TARGETS.keys())
+            all_tickers_set = set(active_targets.keys())
             for t, lots in self.ledger.items():
                 if sum(l['qty'] for l in lots) > 0.001:
                     all_tickers_set.add(t)
@@ -3655,7 +3741,7 @@ class CzechInvestorApp:
                     current_holdings_val[t] = 0.0
 
             # --- DYNAMICKÝ POSUV VAH (DRIFTING TARGETS) ---
-            effective_targets = TARGETS.copy()
+            effective_targets = active_targets.copy()
             if getattr(self, 'drifting_targets_enabled', False) and total_current_portfolio_val > 0:
                 effective_targets = self._apply_drifting_targets(
                     current_targets=effective_targets,
@@ -3667,65 +3753,102 @@ class CzechInvestorApp:
                 self.root.after(0, lambda: messagebox.showerror("Chyba", "Požadovaná částka přesahuje aktuální hodnotu celého portfolia!"))
                 return
 
-            valid_targets = [w for w in effective_targets.values() if w > 0]
-            min_target = min(valid_targets) if valid_targets else 1.0
+            # 1. Rozdělení vlastněných pozic na:
+            #    a) Aktivní akcie patřící do aktuální předvolby (cílová váha > 0)
+            #    b) Vyřazené / cizí akcie, které vlastníme, ale do aktuální předvolby nepatří (cíl 0 %)
+            active_only_targets = {t: w for t, w in effective_targets.items() if w > 0.0}
+            non_portfolio_tickers = [
+                t for t in all_tickers
+                if effective_targets.get(t, 0.0) <= 0.0 and current_holdings_val.get(t, 0.0) > 0.0
+            ]
+            non_portfolio_val = sum(current_holdings_val[t] for t in non_portfolio_tickers)
 
-            low = 0.0
-            high = total_current_portfolio_val / min_target if min_target > 0 else total_current_portfolio_val * 2
-            virtual_total = 0.0
+            # Slovník výsledných částek k prodeji v CZK pro každý ticker
+            sell_allocations_czk = {}
 
-            for _ in range(50):
-                mid = (low + high) / 2.0
-                cash_raised = 0.0
-                # OPRAVA: Pro Výběr hotovosti počítáme poměrově jen aktivní akcie v předvolbě
-                for t, target in effective_targets.items():
-                    if target <= 0.0: continue
-                    ideal_val = mid * target
-                    curr_val = current_holdings_val.get(t, 0.0)
-                    if curr_val > ideal_val:
-                        cash_raised += (curr_val - ideal_val)
+            # 2. Prioritní výprodej akcií, které do aktuálního portfolia nepatří
+            if non_portfolio_val >= target_cash and non_portfolio_val > 0.0:
+                # Vyřazené akcie samy o sobě pokryjí celý požadovaný výběr hotovosti.
+                # Prodáme je poměrně podle jejich tržní hodnoty přesně do výše target_cash,
+                # aniž bychom sáhli na akcie patřící do aktivního portfolia.
+                ratio = target_cash / non_portfolio_val
+                for t in non_portfolio_tickers:
+                    sell_allocations_czk[t] = current_holdings_val[t] * ratio
+            else:
+                # Vyřazené akcie nestačí (nebo žádné nejsou) -> vyprodáme je ÚPLNĚ (100 %)
+                for t in non_portfolio_tickers:
+                    sell_allocations_czk[t] = current_holdings_val[t]
 
-                if cash_raised > target_cash:
-                    low = mid
-                else:
-                    high = mid
-                    virtual_total = mid
+                # Zbývající částku dobereme Water-Fillingem pouze z nadvážených aktivních akcií
+                remaining_target_cash = max(0.0, target_cash - non_portfolio_val)
 
-            rows_to_insert = []
-            # I výpis do tabulky ignoruje akcie, které už v předvolbě nejsou
-            for t, target in effective_targets.items():
-                if target <= 0.0: continue
-                ideal_val = virtual_total * target
-                curr_val = current_holdings_val.get(t, 0.0)
+                if remaining_target_cash > 0.0 and active_only_targets:
+                    active_portfolio_val = sum(current_holdings_val.get(t, 0.0) for t in active_only_targets)
+                    valid_targets = list(active_only_targets.values())
+                    min_target = min(valid_targets) if valid_targets else 1.0
 
-                if curr_val > ideal_val:
-                    sell_czk = curr_val - ideal_val
-                    try:
-                        price = prices_dict.get(t, 0.0)
-                        if price <= 0: continue
-                        cur = self.get_currency_for_ticker(t)
-                        fx_rate = fx.get(cur, 23.0)
-                        
-                        price_factor = 100.0 if t.endswith(".L") else 1.0
-                        calc_price = price / price_factor # CENA V GBP/USD
+                    low = 0.0
+                    high = active_portfolio_val / min_target if min_target > 0 else active_portfolio_val * 2
+                    virtual_total = 0.0
 
-                        sell_qty = sell_czk / (calc_price * fx_rate) if calc_price > 0 else 0.0
+                    for _ in range(50):
+                        mid = (low + high) / 2.0
+                        cash_raised = 0.0
+                        for t, target in active_only_targets.items():
+                            ideal_val = mid * target
+                            curr_val = current_holdings_val.get(t, 0.0)
+                            if curr_val > ideal_val:
+                                cash_raised += (curr_val - ideal_val)
 
-                        held_qty = sum(item['qty'] for item in self.ledger.get(t,[]))
-                        if sell_qty > held_qty:
-                            sell_qty = held_qty
-                            sell_czk = sell_qty * calc_price * fx_rate
+                        if cash_raised > remaining_target_cash:
+                            low = mid
+                        else:
+                            high = mid
+                            virtual_total = mid
 
-                        if sell_qty > 0.001:
-                            rows_to_insert.append((
-                                t,
-                                f"{sell_qty:.3f}".replace('.', ','), 
-                                f"{calc_price:.2f}".replace('.', ','),
-                                f"{sell_czk:.0f}",
-                                "❌"
-                            ))
-                    except Exception as e:
-                        print(f"Přeskakuji odprodej u {t}: {e}")
+                    for t, target in active_only_targets.items():
+                        ideal_val = virtual_total * target
+                        curr_val = current_holdings_val.get(t, 0.0)
+                        if curr_val > ideal_val:
+                            sell_allocations_czk[t] = curr_val - ideal_val
+
+            # 3. Převod navržených částek na kusy a seřazení tabulky (vyřazené akcie nahoře)
+            raw_rows_data = []
+            for t, sell_czk in sell_allocations_czk.items():
+                if sell_czk <= 0.0:
+                    continue
+                try:
+                    price = prices_dict.get(t, 0.0)
+                    if price <= 0: continue
+                    cur = self.get_currency_for_ticker(t)
+                    fx_rate = fx.get(cur, 23.0)
+                    
+                    price_factor = 100.0 if t.endswith(".L") else 1.0
+                    calc_price = price / price_factor # CENA V GBP/USD
+
+                    sell_qty = sell_czk / (calc_price * fx_rate) if calc_price > 0 else 0.0
+
+                    held_qty = sum(item['qty'] for item in self.ledger.get(t, []))
+                    if sell_qty > held_qty:
+                        sell_qty = held_qty
+                        sell_czk = sell_qty * calc_price * fx_rate
+
+                    if sell_qty > 0.001:
+                        row_tuple = (
+                            t,
+                            f"{sell_qty:.3f}".replace('.', ','), 
+                            f"{calc_price:.2f}".replace('.', ','),
+                            f"{sell_czk:.0f}",
+                            "❌"
+                        )
+                        is_non_portfolio = 1 if effective_targets.get(t, 0.0) <= 0.0 else 0
+                        raw_rows_data.append((is_non_portfolio, sell_czk, row_tuple))
+                except Exception as e:
+                    print(f"Přeskakuji odprodej u {t}: {e}")
+
+            # Seřazení: nejprve vyřazené akcie (cíl 0 %), poté od největší částky prodeje
+            raw_rows_data.sort(key=lambda x: (-x[0], -x[1], x[2][0]))
+            rows_to_insert = [r[2] for r in raw_rows_data]
 
             self.root.after(0, lambda: self._populate_sell_staging(rows_to_insert))
 
@@ -4831,13 +4954,23 @@ class CzechInvestorApp:
         
         self.current_preset_name = new_name
         active_preset = self.presets[new_name]
-        
+
         global TARGETS
-        TARGETS.clear()
-        TARGETS.update({k: float(v) for k, v in active_preset["targets"].items()})
+        lock = getattr(self, '_save_lock', None)
+        if lock:
+            with lock:
+                TARGETS.clear()
+                TARGETS.update({k: float(v) for k, v in active_preset["targets"].items()})
+        else:
+            TARGETS.clear()
+            TARGETS.update({k: float(v) for k, v in active_preset["targets"].items()})
+
         self.ethical_filters = active_preset.get("ethical_filters", {k: True for k in TAGS})
-        
         self.save_data()
+
+        # Aktualizace nabídky tickerů i na záložce Prodej & Ledger
+        if hasattr(self, 'sell_ticker') and self.sell_ticker.winfo_exists():
+            self.sell_ticker['values'] = list(TARGETS.keys())
         
         # VYČIŠTĚNÍ PAMĚTI: Zabráníme pádu při vykreslování grafů (IndexError)
         self.sim_weights = None
@@ -4854,7 +4987,9 @@ class CzechInvestorApp:
         except:
             current_index = None
             
-        self.notebook.forget(self.tuner_frame)
+        old_tuner_frame = self.tuner_frame
+        self.notebook.forget(old_tuner_frame)
+        old_tuner_frame.destroy()
         
         try:
             self.setup_tuner_tab(index=current_index)
@@ -5042,7 +5177,8 @@ class CzechInvestorApp:
             
             # Stahování a příprava historických metrik ---
             # Musíme ověřit i to, zda existují matice (protože preloader na pozadí je nestahuje)
-            if force_download or not getattr(self, 'tuner_data_loaded', False) or not hasattr(self, 'tuner_period_returns'):
+            missing_tickers_in_cache = not set(tickers).issubset(set(getattr(self, 'ordered_tickers', [])))
+            if force_download or not getattr(self, 'tuner_data_loaded', False) or not hasattr(self, 'tuner_period_returns') or missing_tickers_in_cache:
                 self.root.after(0, lambda: self.tuner_loading_state["label"].config(text="Stahuji data, prosím, čekejte..."))
                 
                 fx = self.get_fx_rates() # Zkusí stáhnout, při chybě tiše použije fallback
@@ -6197,6 +6333,9 @@ class CzechInvestorApp:
         # Zjistíme celkový počet akcií v aktuálním tuningu
         total_stocks = len(self.ordered_tickers)
         
+        # Vyčištění starých klíčů, aby v TARGETS nezůstaly akcie z předchozí předvolby
+        TARGETS.clear()
+
         # Projdeme všechny akcie pomocí indexu, abychom bezpečně poznali tu poslední
         for i in range(total_stocks):
             t = self.ordered_tickers[i]
@@ -6642,18 +6781,18 @@ class CzechInvestorApp:
             self.ax1.clear()
             
             if has_buys:
-                # 1. Šedá čára: Hypotetická historie
+                # Šedá čára: Hypotetická historie
                 sim_to_plot = sim_curve[:first_buy_dt]
                 self.ax1.plot(sim_to_plot.index, sim_to_plot.values, color='grey', linestyle='--', alpha=0.6, label="Simulace (hypotetická historie)")
                 
-                # 2. Oranžová čára: S&P 500 s poplatky
-                if "SPY" in hist_prices_raw.columns:
-                    spy_data_to_plot = spy_benchmark_curve[spy_benchmark_curve.index >= first_buy_dt]
-                    self.ax1.plot(spy_data_to_plot.index, spy_data_to_plot.values, color='#F57F17', linestyle=':', linewidth=1.5, label="S&P 500 Benchmark (vč. poplatků)")
-
-                # 3. Modrá čára: Skutečný účet
+                # Modrá čára: Skutečný účet
                 real_actual_to_plot = real_portfolio_curve_actual[real_portfolio_curve_actual.index >= first_buy_dt]
                 self.ax1.plot(real_actual_to_plot.index, real_actual_to_plot.values, color='#0D47A1', linewidth=2, label="Reálné portfolio (skutečná hodnota na účtu)")
+
+                # Oranžová čára: S&P 500 s poplatky
+                if "SPY" in hist_prices_raw.columns:
+                    spy_data_to_plot = spy_benchmark_curve[spy_benchmark_curve.index >= first_buy_dt]
+                    self.ax1.plot(spy_data_to_plot.index, spy_data_to_plot.values, color='#F57F17', linestyle='-', linewidth=0.8, label="S&P 500 Benchmark (vč. poplatků)")
                 
                 self.ax1.axvline(x=first_buy_dt, color='red', linestyle='-', alpha=0.4)
             else:
@@ -8082,7 +8221,9 @@ class CzechInvestorApp:
         window.destroy()
         
         # Reset a znovunačtení záložky Tuning
-        self.notebook.forget(self.tuner_frame)
+        old_tuner_frame = self.tuner_frame
+        self.notebook.forget(old_tuner_frame)
+        old_tuner_frame.destroy()
         
         # Ošetření pro metodu setup_tuner_tab, pokud by nepodporovala index
         try:
